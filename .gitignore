@@ -7,8 +7,7 @@ HELP.md
 *.ipr
 
 examples
-hotpotQA
-MuSiQue
+Dataset
 */results
 
 *.json
