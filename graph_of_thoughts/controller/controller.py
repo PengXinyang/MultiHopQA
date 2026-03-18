@@ -1,0 +1,154 @@
+"""
+控制器模块：管理操作图的执行流程，生成图推理状态（Graph Reasoning State）。
+"""
+
+import json
+import logging
+from typing import List
+from graph_of_thoughts.language_models import AbstractLanguageModel
+from graph_of_thoughts.operations import GraphOfOperations, Thought
+from graph_of_thoughts.prompter import Prompter
+from graph_of_thoughts.parser import Parser
+
+
+class Controller:
+    """
+    控制器类，用于管理操作图（Graph of Operations）的执行流程，生成图推理状态。
+    涉及语言模型调用、图操作执行、提示词生成和响应解析。
+    """
+
+    def __init__(
+        self,
+        lm: AbstractLanguageModel,
+        graph: GraphOfOperations,
+        prompter: Prompter,
+        parser: Parser,
+        problem_parameters: dict,
+    ) -> None:
+        """
+        初始化 Controller 实例。
+
+        :param lm: 语言模型实例（AbstractLanguageModel 的子类）
+        :type lm: AbstractLanguageModel
+        :param graph: 要执行的操作图
+        :type graph: GraphOfOperations
+        :param prompter: 提示词生成器，用于构造发送给 LLM 的提示词
+        :type prompter: Prompter
+        :param parser: 解析器，用于解析 LLM 的响应
+        :type parser: Parser
+        :param problem_parameters: 问题的初始参数/状态
+        :type problem_parameters: dict
+        """
+        self.logger = logging.getLogger(self.__class__.__module__)
+        self.lm = lm
+        self.graph = graph
+        self.prompter = prompter
+        self.parser = parser
+        self.problem_parameters = problem_parameters
+        self.run_executed = False
+
+    def run(self) -> None:
+        """
+        运行控制器，按拓扑顺序执行操作图中的所有操作。
+        确保程序在执行前处于有效状态。
+
+        :raises AssertionError: 如果操作图没有根节点
+        :raises AssertionError: 如果某操作的后继不在操作图中
+        """
+        self.logger.debug("检查程序是否处于有效状态")
+        assert self.graph.roots is not None, "操作图没有根节点"
+        self.logger.debug("程序状态有效")
+
+        # 初始化执行队列：所有可执行的操作（前驱已完成）
+        execution_queue = [
+            operation
+            for operation in self.graph.operations
+            if operation.can_be_executed()
+        ]
+
+        while len(execution_queue) > 0:
+            current_operation = execution_queue.pop(0)
+            self.logger.info("正在执行操作 %s", current_operation.operation_type)
+            current_operation.execute(
+                self.lm, self.prompter, self.parser, **self.problem_parameters
+            )
+            self.logger.info("操作 %s 执行完成", current_operation.operation_type)
+            
+            # 检查后继操作是否可以执行
+            for operation in current_operation.successors:
+                assert (
+                    operation in self.graph.operations
+                ), "操作的后继不在操作图中"
+                if operation.can_be_executed():
+                    execution_queue.append(operation)
+        
+        self.logger.info("所有操作执行完成")
+        self.run_executed = True
+
+    def get_final_thoughts(self) -> List[List[Thought]]:
+        """
+        获取所有操作执行完毕后的最终思维结果。
+
+        :return: 操作图中每个叶子节点的思维列表
+        :rtype: List[List[Thought]]
+        :raises AssertionError: 如果 run() 方法尚未执行
+        """
+        assert self.run_executed, "run() 方法尚未执行"
+        return [operation.get_thoughts() for operation in self.graph.leaves]
+
+    def output_graph(self, path: str) -> None:
+        """
+        将操作图的状态和结果序列化为 JSON 文件。
+
+        :param path: 输出文件路径
+        :type path: str
+        """
+        output = []
+        for operation in self.graph.operations:
+            operation_serialized = {
+                "operation": operation.operation_type.name,
+                "thoughts": [thought.state for thought in operation.get_thoughts()],
+            }
+            # 如果有评分，添加评分信息
+            if any([thought.scored for thought in operation.get_thoughts()]):
+                operation_serialized["scored"] = [
+                    thought.scored for thought in operation.get_thoughts()
+                ]
+                operation_serialized["scores"] = [
+                    thought.score for thought in operation.get_thoughts()
+                ]
+            # 如果有验证，添加验证信息
+            if any([thought.validated for thought in operation.get_thoughts()]):
+                operation_serialized["validated"] = [
+                    thought.validated for thought in operation.get_thoughts()
+                ]
+                operation_serialized["validity"] = [
+                    thought.valid for thought in operation.get_thoughts()
+                ]
+            # 如果与标准答案比较过，添加比较结果
+            if any(
+                [
+                    thought.compared_to_ground_truth
+                    for thought in operation.get_thoughts()
+                ]
+            ):
+                operation_serialized["compared_to_ground_truth"] = [
+                    thought.compared_to_ground_truth
+                    for thought in operation.get_thoughts()
+                ]
+                operation_serialized["problem_solved"] = [
+                    thought.solved for thought in operation.get_thoughts()
+                ]
+            output.append(operation_serialized)
+
+        # 添加 token 使用量和费用信息
+        output.append(
+            {
+                "prompt_tokens": self.lm.prompt_tokens,
+                "completion_tokens": self.lm.completion_tokens,
+                "cost": self.lm.cost,
+            }
+        )
+
+        with open(path, "w") as file:
+            file.write(json.dumps(output, indent=2))

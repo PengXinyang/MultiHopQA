@@ -1,0 +1,187 @@
+"""
+GCLI Gemini 语言模型模块：通过 GCLI 代理访问 Gemini 模型。
+
+GCLI 是一个提供 OpenAI 兼容 API 的 Gemini 代理服务，
+允许使用 OpenAI SDK 调用 Gemini 模型。
+"""
+
+import os
+import random
+import time
+from typing import Dict, List, Union
+
+import backoff
+from openai import OpenAI, OpenAIError
+from openai.types.chat.chat_completion import ChatCompletion
+
+from .abstract_language_model import AbstractLanguageModel
+
+
+class GCLIGemini(AbstractLanguageModel):
+    """
+    使用 GCLI 代理访问 Gemini 模型（如 gemini-2.5-flash / gemini-2.5-pro）的适配类。
+
+    设计目标：
+    - 与 ChatGPT / Gemini 的用法基本一致（构造函数 / query / get_response_texts）
+    - 复用现有 config.json 中的 Gemini 模型配置
+    - 通过 OpenAI 兼容的 /v1/chat/completions 接口调用 GCLI 代理
+    """
+
+    def __init__(
+        self,
+        config_path: str = "",
+        model_name: str = "gemini-2.5-flash",
+        cache: bool = False,
+    ) -> None:
+        """
+        初始化 GCLIGemini 实例。
+
+        :param config_path: 配置文件路径（默认与其它模型共用的 config.json）
+        :type config_path: str
+        :param model_name: 使用的模型名称，如 "gemini-2.5-flash" 或 "gemini-2.5-pro"
+        :type model_name: str
+        :param cache: 是否开启本地缓存，默认为 False
+        :type cache: bool
+        """
+        super().__init__(config_path, model_name, cache)
+
+        # 复用 config.json 中对应 model_name 的配置
+        self.config: Dict = self.config[model_name]
+        self.model_id: str = self.config["model_id"]
+        self.prompt_token_cost: float = self.config["prompt_token_cost"]
+        self.response_token_cost: float = self.config["response_token_cost"]
+
+        self.temperature: float = self.config["temperature"]
+        self.max_tokens: int = self.config["max_tokens"]
+        self.stop: Union[str, List[str]] = self.config["stop"]
+
+        # GCLI 代理相关配置
+        # 优先使用环境变量，否则使用 config.json 中的 api_key / base_url
+        self.api_key: str = os.getenv("GCLI_API_KEY", self.config.get("api_key", ""))
+        if self.api_key == "":
+            raise ValueError(
+                "GCLI_API_KEY 未设置，且配置文件中未提供 api_key"
+            )
+
+        # OpenAI 兼容接口通常是 <base_url>/v1/chat/completions
+        # 默认使用 GCLI 公共地址，可在配置中覆盖
+        self.base_url: str = self.config.get(
+            "base_url",
+            "https://gcli.ggchan.dev",
+        )
+
+        # 使用 OpenAI SDK，将 base_url 指向 GCLI 代理
+        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+
+    def query(
+        self, query: str, num_responses: int = 1
+    ) -> Union[List[ChatCompletion], ChatCompletion]:
+        """
+        向 GCLI 代理发送查询请求。
+
+        对外接口与 ChatGPT.query 保持一致：
+        - num_responses == 1 时返回单个 ChatCompletion
+        - num_responses > 1 时返回 ChatCompletion 列表
+
+        :param query: 发送给模型的查询内容
+        :type query: str
+        :param num_responses: 期望的响应数量，默认为 1
+        :type num_responses: int
+        :return: 模型的响应
+        :rtype: Union[List[ChatCompletion], ChatCompletion]
+        """
+        # 检查缓存
+        if self.cache and query in self.response_cache:
+            return self.response_cache[query]
+
+        if num_responses == 1:
+            response = self.chat([{"role": "user", "content": query}], num_responses)
+        else:
+            # 多响应请求：分批处理，带重试机制
+            response_list: List[ChatCompletion] = []
+            next_try = num_responses
+            total_num_attempts = num_responses
+            while num_responses > 0 and total_num_attempts > 0:
+                try:
+                    assert next_try > 0
+                    res = self.chat([{"role": "user", "content": query}], next_try)
+                    response_list.append(res)
+                    num_responses -= next_try
+                    next_try = min(num_responses, next_try)
+                except Exception as e:
+                    # 失败时减半重试数量
+                    next_try = (next_try + 1) // 2
+                    self.logger.warning(
+                        f"GCLIGemini 请求出错: {e}，使用 {next_try} 个样本重试"
+                    )
+                    time.sleep(random.randint(1, 3))
+                    total_num_attempts -= 1
+            response = response_list
+
+        # 缓存响应
+        if self.cache:
+            self.response_cache[query] = response
+        return response
+
+    @backoff.on_exception(backoff.expo, OpenAIError, max_time=10, max_tries=6)
+    def chat(self, messages: List[Dict], num_responses: int = 1) -> ChatCompletion:
+        """
+        通过 GCLI 代理向 Gemini 模型发起一次 /v1/chat/completions 调用。
+
+        :param messages: 消息列表，每个消息是包含 role 和 content 的字典
+        :type messages: List[Dict]
+        :param num_responses: 期望的响应数量，默认为 1
+        :type num_responses: int
+        :return: 模型的响应
+        :rtype: ChatCompletion
+        """
+        response = self.client.chat.completions.create(
+            model=self.model_id,
+            messages=messages,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            n=num_responses,
+            stop=self.stop,
+        )
+
+        # 统计 token 使用和费用（GCLI 为 OpenAI 兼容接口时通常会返回 usage 字段）
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+            completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+            self.prompt_tokens += prompt_tokens
+            self.completion_tokens += completion_tokens
+
+            prompt_tokens_k = float(self.prompt_tokens) / 1000.0
+            completion_tokens_k = float(self.completion_tokens) / 1000.0
+            self.cost = (
+                self.prompt_token_cost * prompt_tokens_k
+                + self.response_token_cost * completion_tokens_k
+            )
+
+        self.logger.info(
+            f"GCLIGemini 响应: {response}"
+            f"\n当前累计费用: ${self.cost:.4f}"
+        )
+        return response
+
+    def get_response_texts(
+        self, query_response: Union[List[ChatCompletion], ChatCompletion]
+    ) -> List[str]:
+        """
+        从 ChatCompletion 响应中提取纯文本。
+
+        与 ChatGPT.get_response_texts 行为保持一致。
+
+        :param query_response: 模型的响应
+        :type query_response: Union[List[ChatCompletion], ChatCompletion]
+        :return: 响应文本列表
+        :rtype: List[str]
+        """
+        if not isinstance(query_response, List):
+            query_response = [query_response]
+        return [
+            choice.message.content
+            for response in query_response
+            for choice in response.choices
+        ]
