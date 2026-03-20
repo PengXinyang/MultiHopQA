@@ -418,6 +418,12 @@ class Generate(Operation):
             previous_thoughts = [Thought(state=kwargs)]
 
         for thought in previous_thoughts:
+            # base_state = dict(thought.state or {})
+            # # 如果当前 Generate 节点带有 node_instruction（来自 AI GoO），
+            # # 将其注入到状态中，供 Prompter 动态构造提示词使用。
+            # node_instruction = getattr(self, "node_instruction", None)
+            # if node_instruction:
+            #     base_state["node_instruction"] = node_instruction
             base_state = thought.state
             prompt = prompter.generate_prompt(self.num_branches_prompt, **base_state)
             self.logger.debug("LLM 提示词: %s", prompt)

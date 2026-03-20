@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import random
+import argparse
+import time
 from typing import Dict, List, Callable
 
 import utils
@@ -118,6 +120,32 @@ Answer:"""
         method = kwargs.get("method", "io")
         current = kwargs.get("current", "")
         phase = kwargs.get("phase", 0)
+        # node_instruction = kwargs.get("node_instruction", "").strip()
+        #
+        # # 如果是 got 的第 0 阶段（需要输出特定 JSON），优先走内置模板
+        # # 避免节点级 instruction 覆盖 got_split_json 的解析逻辑。
+        # if method.startswith("got") and phase == 0:
+        #     num_docs = kwargs.get("num_docs", 10)
+        #     half = num_docs // 2
+        #     return self.got_split_prompt.format(
+        #         question=question,
+        #         context_text=context_text,
+        #         num_docs=num_docs,
+        #         half=half,
+        #         half_plus=half + 1,
+        #     )
+        #
+        # # 如果存在节点级别的 instruction（来自 AI 设计的 GoO），优先使用它。
+        # # 但同时加入“硬约束”：必须只输出最终答案的单行文本，确保解析器能稳定提取。
+        # if node_instruction:
+        #     return (
+        #         f"<Instruction>\n{node_instruction}\n\n"
+        #         f"Hard constraint: Answer the question based only on the given context. "
+        #         f"Output only the final answer in one line, optionally prefixed with \"Answer: \".\n"
+        #         f"</Instruction>\n\n"
+        #         f"<Context>\n{context_text}\n</Context>\n\n"
+        #         f"<Question>\n{question}\n</Question>\n"
+        #     )
 
         if method.startswith("io"):
             return self.io_prompt.format(question=question, context_text=context_text)
@@ -412,8 +440,6 @@ def run(
 if __name__ == "__main__":
     # 默认入口：随机跑样本，方法为 io/cot/tot/got，预算为 5 美元
     # 支持的数据集：hotpotqa, musique_ans, musique_full
-    
-    import argparse
     parser = argparse.ArgumentParser(description="多跳问答 GoT 实验")
     parser.add_argument("--dataset", type=str, default="hotpotqa",
                         choices=["hotpotqa", "musique_ans", "musique_full"],
@@ -424,22 +450,20 @@ if __name__ == "__main__":
                         help="预算（美元）")
     parser.add_argument("--num_samples", type=int, default=1,
                         help="随机抽取的样本数")
-    parser.add_argument("--seed", type=int, default=6,
-                        help="随机种子")
     args = parser.parse_args()
     
     # 数据集路径和大小映射
     DATASET_CONFIG = {
         "hotpotqa": {
-            "path": os.path.join(os.path.dirname(__file__), "..", "hotpotQA", "hotpot_dev_distractor_v1.json"),
+            "path": os.path.join(os.path.dirname(__file__), "..", "dataset", "hotpotQA", "hotpot_dev_distractor_v1.json"),
             "size": 7405,
         },
         "musique_ans": {
-            "path": os.path.join(os.path.dirname(__file__), "..", "MuSiQue", "musique_ans_v1.0_dev.jsonl"),
+            "path": os.path.join(os.path.dirname(__file__), "..", "dataset", "MuSiQue", "musique_ans_v1.0_dev.jsonl"),
             "size": 2417,
         },
         "musique_full": {
-            "path": os.path.join(os.path.dirname(__file__), "..", "MuSiQue", "musique_full_v1.0_dev.jsonl"),
+            "path": os.path.join(os.path.dirname(__file__), "..", "dataset", "MuSiQue", "musique_full_v1.0_dev.jsonl"),
             "size": 4834,
         },
     }
@@ -450,8 +474,10 @@ if __name__ == "__main__":
     
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"数据集文件不存在: {data_path}")
-    
-    random.seed(args.seed)
+
+    #seed = int(time.time())
+    seed = 42
+    random.seed(seed)
     samples = random.sample(range(len_data), min(args.num_samples, len_data))
     approaches = [io, cot, tot, got]
     

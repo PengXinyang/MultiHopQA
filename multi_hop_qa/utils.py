@@ -4,8 +4,17 @@ import logging
 import os
 from typing import Dict, List, Callable, Any
 
+import score
 from data_loader import loadDataset, DatasetType
 from graph_of_thoughts import controller
+from graph_of_thoughts.auto_goo_designer import (
+    requestGotGooDesign,
+    saveDesignResult,
+)
+from graph_of_thoughts.goo_builder import (
+    loadGooDesignFromFile,
+    buildGraphFromGooDesign,
+)
 
 
 # --- 数据加载与上下文格式化 ---
@@ -158,6 +167,85 @@ def runSingleMethod(
     """
 
     problem_params = buildProblemParams(item, method.__name__)
+
+    # # 如果是 got 方法，先调用“自动 GoO 设计器”为当前样本生成 GoO 建议并保存，
+    # # 然后尝试基于建议动态构建 GoO；如果失败则回退到手写的 got()。
+    # operations_graph = None
+    # if method_name.startswith("got"):
+    #     try:
+    #         context_text = problem_params.get("context_text", "")
+    #         preview = context_text[:3000] if isinstance(context_text, str) else ""
+    #         sample_id = item.get("_id") or item.get("id") or problem_params.get(
+    #             "question", ""
+    #         )[:32]
+    #         retry_feedback = ""
+    #         max_attempts = 3
+    #
+    #         for attempt in range(1, max_attempts + 1):
+    #             design = requestGotGooDesign(
+    #                 lm=lm,
+    #                 question=problem_params.get("question", ""),
+    #                 context_preview=preview,
+    #                 retry_feedback=retry_feedback,
+    #             )
+    #             # 保存每次尝试的设计结果，方便回溯
+    #             design_path = saveDesignResult(
+    #                 out_dir=os.path.join(run_dir, "auto_goo"),
+    #                 method_name=f"{method_name}_try{attempt}",
+    #                 sample_id=sample_id,
+    #                 design=design,
+    #             )
+    #
+    #             try:
+    #                 parsed_design = loadGooDesignFromFile(design_path)
+    #                 built = buildGraphFromGooDesign(
+    #                     parsed_design,
+    #                     scoring_function=score.scoreMultiHop,
+    #                     ground_truth_evaluator=score.testMultiHop,
+    #                 )
+    #                 operations_graph = built.graph
+    #                 logging.info(
+    #                     "Using AI-designed GoO for sample %s (attempt %d)",
+    #                     sample_id,
+    #                     attempt,
+    #                 )
+    #                 break
+    #             except Exception as build_err:
+    #                 msg = str(build_err).lower()
+    #                 if "cycle" in msg or "acyclic" in msg or "topologically" in msg:
+    #                     details = str(build_err)
+    #                     retry_feedback = (
+    #                         "Your previous GoO contains a cycle (or cannot be topologically sorted). "
+    #                         "Please regenerate a STRICT DAG with no cycles. "
+    #                         "Ensure dependencies are valid and keep branch+merge structure. "
+    #                         f"Cycle diagnostics from validator: {details}"
+    #                     )
+    #                     logging.warning(
+    #                         "AI GoO attempt %d has cycle for sample %s, details: %s",
+    #                         attempt,
+    #                         sample_id,
+    #                         details,
+    #                     )
+    #                     continue
+    #                 # 非环错误直接抛出，外层兜底回退
+    #                 raise
+    #
+    #         if operations_graph is None:
+    #             logging.warning(
+    #                 "AI GoO failed after %d attempts for sample %s, fallback to handwritten got().",
+    #                 max_attempts,
+    #                 sample_id,
+    #             )
+    #     except Exception as e:
+    #         logging.warning(
+    #             "Auto GoO build failed for %s, fallback to default graph: %s",
+    #             method_name,
+    #             e,
+    #         )
+
+    # 非 got 或 got 动态构建失败时，回退到默认手写图
+    # if operations_graph is None:
+    #     operations_graph = method()
     operations_graph = method()
 
     executor = controller.Controller(
@@ -171,7 +259,9 @@ def runSingleMethod(
     try:
         executor.run()
     except Exception as e:
-        logging.error("Exception in %s for item %s: %s", method.__name__, item.get("_id", ""), e)
+        logging.error(
+            "Exception in %s for item %s: %s", method.__name__, item.get("_id", ""), e
+        )
 
     # 保存结果
     out_path = os.path.join(
