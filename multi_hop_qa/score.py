@@ -133,3 +133,48 @@ def numErrorsMultiHop(state: Dict) -> float:
 def scoreMultiHop(state: Dict) -> float:
     """给 Score 操作用的打分函数：值越大越好（答案 F1，可叠加 supporting_facts F1）。"""
     return combinedScore(state)
+
+
+def _computeOnlineReasoningScore(state: Dict) -> float:
+    """
+    在线推理评分（不依赖 gold）：
+    - 证据覆盖：evidence_spans 数量相对 hop 数的覆盖比例
+    - 角色置信：confidence 字段
+    - 一致性：候选答案投票一致度（若提供）
+    """
+    evidence_spans = state.get("evidence_spans") or []
+    num_hops = state.get("num_hops") or 2
+    try:
+        evidence_score = min(1.0, len(evidence_spans) / max(1, int(num_hops)))
+    except Exception:
+        evidence_score = 0.0
+
+    confidence = state.get("confidence", 0.0)
+    try:
+        confidence = max(0.0, min(1.0, float(confidence)))
+    except Exception:
+        confidence = 0.0
+
+    candidates = state.get("candidate_answers") or []
+    consistency = 0.0
+    if isinstance(candidates, list) and candidates:
+        normed = [normalizeAnswer(str(x)) for x in candidates if str(x).strip()]
+        if normed:
+            counts = Counter(normed)
+            consistency = max(counts.values()) / len(normed)
+
+    return 0.45 * evidence_score + 0.35 * confidence + 0.20 * consistency
+
+
+def scoreMultiAgentGoT(state: Dict) -> float:
+    """
+    multiAgentGoT 混合评分：在线推理 + 离线指标。
+
+    在线推理用于搜索阶段可用信号，离线指标用于实验评估对齐。
+    组合权重可按实验需求微调。
+    """
+    online = _computeOnlineReasoningScore(state)
+    offline = combinedScore(state)
+    state["online_reasoning_score"] = online
+    state["offline_metric_score"] = offline
+    return 0.6 * online + 0.4 * offline
