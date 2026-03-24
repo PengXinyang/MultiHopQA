@@ -49,6 +49,20 @@ class MultiHopParser(parser.Parser):
             return "noanswer"
         return answer
 
+    @staticmethod
+    def _tokenOverlapScore(prediction: str, reference: str) -> float:
+        pred_tokens = re.findall(r"[A-Za-z0-9]+", (prediction or "").lower())
+        ref_tokens = re.findall(r"[A-Za-z0-9]+", (reference or "").lower())
+        if not pred_tokens or not ref_tokens:
+            return 0.0
+        pred_set = set(pred_tokens)
+        ref_set = set(ref_tokens)
+        overlap = len(pred_set & ref_set) / max(1, len(ref_set))
+        # 只要命中关键 token，就给非零部分分；上限留给 judge/EM
+        if overlap > 0:
+            return min(0.8, max(0.1, overlap))
+        return 0.0
+
     def parse_generate_answer(self, state: Dict, texts: List[str]) -> List[Dict]:
         new_states = []
         method = state.get("method", "io")
@@ -83,7 +97,8 @@ class MultiHopParser(parser.Parser):
                         sub_questions = obj.get("sub_questions") or []
                         if not isinstance(sub_questions, list):
                             sub_questions = []
-                        for idx, subq in enumerate(sub_questions[:4]):
+                        max_subq = int(state.get("max_subquestions", 4) or 4)
+                        for idx, subq in enumerate(sub_questions[:max_subq]):
                             if not str(subq).strip():
                                 continue
                             new_state = state.copy()
@@ -204,6 +219,13 @@ class MultiHopParser(parser.Parser):
                             score = 0.0
                 if score > 0.0:
                     break
+
+            if score <= 0.0:
+                state = states[0]
+                predicted = state.get("answer") or state.get("current") or state.get("partial_answer") or ""
+                reference = state.get("ground_truth_answer") or ""
+                score = self._tokenOverlapScore(predicted, reference)
+
             score = max(0.0, min(1.0, score))
             return [score] * len(states)
 

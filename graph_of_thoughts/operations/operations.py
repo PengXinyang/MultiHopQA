@@ -221,6 +221,13 @@ class Score(Operation):
                 self.logger.debug("使用评分函数 %s 评分", self.scoring_function)
                 scores = self.scoring_function(previous_thoughts_states)
             else:
+                if hasattr(lm, "set_role"):
+                    role = "default"
+                    if previous_thoughts_states and isinstance(previous_thoughts_states[0], dict):
+                        role = previous_thoughts_states[0].get("agent_role", "default")
+                        if previous_thoughts_states[0].get("method", "").startswith("multiAgentGoT"):
+                            role = "critic"
+                    lm.set_role(role)
                 prompt = prompter.score_prompt(previous_thoughts_states)
                 self.logger.debug("LLM 提示词: %s", prompt)
                 responses = lm.get_response_texts(
@@ -240,6 +247,11 @@ class Score(Operation):
                     self.logger.debug("使用评分函数 %s 评分", self.scoring_function)
                     score = self.scoring_function(thought.state)
                 else:
+                    if hasattr(lm, "set_role"):
+                        role = thought.state.get("agent_role", "default")
+                        if thought.state.get("method", "").startswith("multiAgentGoT"):
+                            role = "critic"
+                        lm.set_role(role)
                     prompt = prompter.score_prompt([thought.state])
                     self.logger.debug("LLM 提示词: %s", prompt)
                     responses = lm.get_response_texts(
@@ -425,6 +437,8 @@ class Generate(Operation):
             # if node_instruction:
             #     base_state["node_instruction"] = node_instruction
             base_state = thought.state
+            if hasattr(lm, "set_role"):
+                lm.set_role(base_state.get("agent_role", "default"))
             prompt = prompter.generate_prompt(self.num_branches_prompt, **base_state)
             self.logger.debug("LLM 提示词: %s", prompt)
             responses = lm.get_response_texts(

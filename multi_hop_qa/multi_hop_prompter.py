@@ -101,7 +101,7 @@ Answer:"""
 
     ma_planner_prompt = """<Instruction>
 You are the Planner agent in a 4-agent multi-hop QA system.
-Decompose the question into at most 4 executable sub-questions.
+Decompose the question into at most {max_subquestions} executable sub-questions.
 Output ONLY valid JSON:
 {{"sub_questions": ["...", "...", "..."]}}
 </Instruction>
@@ -192,7 +192,9 @@ Compare the predicted answer against the reference answer and give a correctness
 Rules:
 - 1.0 means fully correct.
 - 0.0 means completely wrong.
+- If the prediction mentions key words/phrases from the reference answer, give partial credit (>0), not only 0/1.
 - Consider semantic equivalence, aliases, and minor surface-form variation.
+- You MUST output a decimal number in [0,1], e.g., 0.35, 0.70, 1.00.
 - Output ONLY one line in the exact format: Score: <float between 0 and 1>
 </Instruction>
 
@@ -270,7 +272,9 @@ Rules:
             role = kwargs.get("agent_role", "planner")
             if role == "planner":
                 return self.ma_planner_prompt.format(
-                    question=question, context_text=context_text
+                    question=question,
+                    context_text=context_text,
+                    max_subquestions=kwargs.get("max_subquestions", 4),
                 )
             if role == "retriever":
                 return self.ma_retriever_prompt.format(

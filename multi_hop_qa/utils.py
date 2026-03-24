@@ -125,20 +125,25 @@ def buildProblemParams(item: Dict, method_name: str) -> Dict:
     context = item.get("context", [])
     context_text = contextToText(context)
     num_docs = len(context) if context else 10
+    num_hops = int(item.get("num_hops", 2) or 2)
+    decomposition = item.get("question_decomposition", []) or []
+    dynamic_branches = len(decomposition) if decomposition else num_hops
+    dynamic_branches = max(1, min(8, int(dynamic_branches)))
 
     return {
         "question": item.get("question", ""),
         "context": context,
         "context_text": context_text,
         "num_docs": num_docs,
-        "num_hops": item.get("num_hops", 2),
+        "num_hops": num_hops,
+        "max_subquestions": dynamic_branches,
         "answer": "",
         "current": "",
         "ground_truth_answer": item.get("answer", ""),
         "ground_truth_sp": item.get("supporting_facts", []),
         "answer_aliases": item.get("answer_aliases", []),
         "answerable": item.get("answerable", True),
-        "question_decomposition": item.get("question_decomposition", []),
+        "question_decomposition": decomposition,
         "phase": 0,
         "agent_role": "planner" if method_name.startswith("multiAgentGoT") else "",
         "sub_id": -1,
@@ -257,7 +262,10 @@ def runSingleMethod(
     # 非 got 或 got 动态构建失败时，回退到默认手写图
     # if operations_graph is None:
     #     operations_graph = method()
-    operations_graph = method()
+    if method.__name__.startswith("multiAgentGoT"):
+        operations_graph = method(problem_params.get("max_subquestions", 4))
+    else:
+        operations_graph = method()
 
     executor = controller.Controller(
         lm,
@@ -279,6 +287,17 @@ def runSingleMethod(
         run_dir, method.__name__, f"{item.get('_id', id(item))}.json"
     )
     executor.output_graph(out_path)
+
+    # 额外保存“精简结果”文件，便于快速查看关键指标
+    summary_path = os.path.join(
+        run_dir, method.__name__, f"{item.get('_id', id(item))}.summary.json"
+    )
+    try:
+        summary = _buildCompactResultSummary(executor=executor, item=item, method_name=method.__name__)
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.warning("Failed to write summary json for %s: %s", method.__name__, e)
 
     return getattr(lm, "cost", 0.0)
 
@@ -304,3 +323,52 @@ def getLmConfigPath(base_dir: str = None) -> str:
         "config.json",
     )
     return os.path.abspath(config_path)
+
+
+def _buildCompactResultSummary(executor: Any, item: Dict, method_name: str) -> Dict:
+    """
+    从执行器中提取关键结果，生成精简版结果字典。
+    包含：EM、F1、score、是否解决、AI评价、标准答案、预测答案等。
+    """
+    final_state = {}
+    final_score = None
+    solved = False
+
+    # 默认取最后一个叶子节点的第一个 thought 作为最终结果
+    # 对当前流程（以 GroundTruth 结尾）通常就是最终答案节点。
+    if getattr(executor, "graph", None) and getattr(executor.graph, "leaves", None):
+        leaves = executor.graph.leaves
+        if leaves:
+            thoughts = leaves[-1].get_thoughts()
+            if thoughts:
+                t = thoughts[0]
+                final_state = t.state or {}
+                solved = bool(getattr(t, "solved", False))
+                try:
+                    final_score = float(getattr(t, "score", 0.0))
+                except Exception:
+                    final_score = None
+
+    predicted = final_state.get("answer", "")
+    gold = final_state.get("ground_truth_answer", item.get("answer", ""))
+    aliases = final_state.get("answer_aliases", item.get("answer_aliases", [])) or []
+
+    em = score.answerEMScore(predicted, gold, aliases)
+    f1 = score.answerF1Score(predicted, gold, aliases)
+
+    # “AI评价”优先用多智能体里的 critique；没有则为空
+    ai_eval = final_state.get("critique", "")
+
+    summary = {
+        "id": item.get("_id", id(item)),
+        "method": method_name,
+        "question": item.get("question", ""),
+        "ground_truth_answer": gold,
+        "predicted_answer": predicted,
+        "EM": bool(em),
+        "F1": float(f1),
+        "score": final_score,
+        "problem_solved": bool(solved),
+        "ai_evaluation": ai_eval,
+    }
+    return summary

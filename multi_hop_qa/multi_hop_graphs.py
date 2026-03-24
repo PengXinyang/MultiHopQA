@@ -44,8 +44,8 @@ def got() -> operations.GraphOfOperations:
     for i in range(2):
         part_id = f"Group {i}"
         sel = operations.Selector(
-            lambda thoughts, part_id=part_id: [
-                t for t in thoughts if t.state.get("part") == part_id
+            lambda thoughts, partId=part_id: [
+                t for t in thoughts if t.state.get("part") == partId
             ]
         )
         sel.add_predecessor(plans)
@@ -64,7 +64,7 @@ def got() -> operations.GraphOfOperations:
     return g
 
 
-def multiAgentGoT() -> operations.GraphOfOperations:
+def multiAgentGoT(num_branches: int = 4) -> operations.GraphOfOperations:
     """
     多智能体 GoT：
     Planner -> (Retriever -> Reasoner -> Critic) x up to 4 sub-questions
@@ -75,7 +75,8 @@ def multiAgentGoT() -> operations.GraphOfOperations:
     g.append_operation(planner)
 
     critic_leaves = []
-    for sub_id in range(4):
+    num_branches = max(1, int(num_branches))
+    for sub_id in range(num_branches):
         sel = operations.Selector(
             lambda thoughts, sid=sub_id: [t for t in thoughts if t.state.get("sub_id") == sid]
         )

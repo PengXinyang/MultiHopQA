@@ -12,6 +12,7 @@ from graph_of_thoughts import language_models, operations
 from multi_hop_graphs import io, cot, tot, got, multiAgentGoT
 from multi_hop_parser import MultiHopParser
 from multi_hop_prompter import MultiHopPrompter
+from role_aware_lm import RoleAwareLM
 
 
 # --- Run ---
@@ -70,6 +71,15 @@ def run(
     # 5. 获取语言模型配置路径
     config_lm_path = utils.getLmConfigPath(os.path.dirname(__file__))
 
+    # 角色模型分配（方案A：一个角色一个智能体/模型实例）
+    role_model_names = {
+        "planner": lm_name,
+        "retriever": "gemini-2.5-flash-gcli",
+        "reasoner": "gemini-2.5-pro-gcli",
+        "critic": "gemini-2.5-pro-gcli",
+        "default": lm_name,
+    }
+
     # 6. 运行实验
     spent = 0.0
     prompter = MultiHopPrompter()
@@ -85,13 +95,23 @@ def run(
             print(f"  方法: {method.__name__}")
             if budget <= 0:
                 break
-            
+
             # 创建语言模型实例
-            lm = language_models.build_language_model(
-                config_lm_path,
-                model_name=lm_name,
-                cache=True,
-            )
+            if method.__name__.startswith("multiAgentGoT"):
+                role_to_lm = {}
+                for role, model_name in role_model_names.items():
+                    role_to_lm[role] = language_models.build_language_model(
+                        config_lm_path,
+                        model_name=model_name,
+                        cache=True,
+                    )
+                lm = RoleAwareLM(role_to_lm=role_to_lm, default_role="default")
+            else:
+                lm = language_models.build_language_model(
+                    config_lm_path,
+                    model_name=lm_name,
+                    cache=True,
+                )
             
             # 执行单个方法
             cost = utils.runSingleMethod(item=item, method=method, lm=lm, prompter=prompter, parser=parser,
