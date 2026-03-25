@@ -144,6 +144,7 @@ def buildProblemParams(item: Dict, method_name: str) -> Dict:
         "answer_aliases": item.get("answer_aliases", []),
         "answerable": item.get("answerable", True),
         "question_decomposition": decomposition,
+        "precomputed_subquestions": [d.get("question", "") for d in decomposition if d.get("question", "")],
         "phase": 0,
         "agent_role": "planner" if method_name.startswith("multiAgentGoT") else "",
         "sub_id": -1,
@@ -155,6 +156,7 @@ def buildProblemParams(item: Dict, method_name: str) -> Dict:
         "candidate_answers": [],
         "online_reasoning_score": 0.0,
         "offline_metric_score": 0.0,
+        "solve_score_threshold": 0.9,
         "method": method_name,
     }
 
@@ -356,8 +358,8 @@ def _buildCompactResultSummary(executor: Any, item: Dict, method_name: str) -> D
     em = score.answerEMScore(predicted, gold, aliases)
     f1 = score.answerF1Score(predicted, gold, aliases)
 
-    # “AI评价”优先用多智能体里的 critique；没有则为空
-    ai_eval = final_state.get("critique", "")
+    # “AI评价”优先使用最终答案的 global_critique，其次回退到分支 critique
+    ai_eval = final_state.get("global_critique", "") or final_state.get("critique", "")
 
     summary = {
         "id": item.get("_id", id(item)),

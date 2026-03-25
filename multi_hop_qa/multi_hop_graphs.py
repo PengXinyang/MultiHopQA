@@ -64,45 +64,61 @@ def got() -> operations.GraphOfOperations:
     return g
 
 
-def multiAgentGoT(num_branches: int = 4) -> operations.GraphOfOperations:
+def multiAgentGoT(num_branches: int = 4, local_branch_k: int = 2) -> operations.GraphOfOperations:
     """
-    多智能体 GoT：
-    Planner -> (Retriever -> Reasoner -> Critic) x up to 4 sub-questions
-    -> Aggregate -> Score(LLM Judge) -> KeepBestN -> GroundTruth
+    多智能体 GoT Hybrid：
+    串行主链 + 每跳局部分叉（Retriever/Reasoner/Critic）+ 局部筛选，再进入下一跳。
+
+    结构：
+    Planner
+      -> [Hop i: Retriever(k) -> Score -> KeepBestN(1)
+                  -> Reasoner(k) -> Score -> KeepBestN(1)
+                  -> Critic(k)   -> Score -> KeepBestN(1)] x N
+      -> Aggregate(3) -> Score(LLM Judge) -> KeepBestN(1) -> GroundTruth
     """
     g = operations.GraphOfOperations()
     planner = operations.Generate(1, 1)
     g.append_operation(planner)
 
-    critic_leaves = []
     num_branches = max(1, int(num_branches))
-    for sub_id in range(num_branches):
-        sel = operations.Selector(
-            lambda thoughts, sid=sub_id: [t for t in thoughts if t.state.get("sub_id") == sid]
-        )
-        sel.add_predecessor(planner)
-        g.add_operation(sel)
+    local_branch_k = max(1, int(local_branch_k))
+    previous = planner
 
-        retriever = operations.Generate(1, 1)
-        retriever.add_predecessor(sel)
+    for _ in range(num_branches):
+        retriever = operations.Generate(1, local_branch_k)
+        retriever.add_predecessor(previous)
         g.add_operation(retriever)
+        retriever_score = operations.Score(1, False, None)
+        retriever_score.add_predecessor(retriever)
+        g.add_operation(retriever_score)
+        retriever_best = operations.KeepBestN(1, True)
+        retriever_best.add_predecessor(retriever_score)
+        g.add_operation(retriever_best)
 
-        reasoner = operations.Generate(1, 1)
-        reasoner.add_predecessor(retriever)
+        reasoner = operations.Generate(1, local_branch_k)
+        reasoner.add_predecessor(retriever_best)
         g.add_operation(reasoner)
+        reasoner_score = operations.Score(1, False, None)
+        reasoner_score.add_predecessor(reasoner)
+        g.add_operation(reasoner_score)
+        reasoner_best = operations.KeepBestN(1, True)
+        reasoner_best.add_predecessor(reasoner_score)
+        g.add_operation(reasoner_best)
 
-        critic = operations.Generate(1, 1)
-        critic.add_predecessor(reasoner)
+        critic = operations.Generate(1, local_branch_k)
+        critic.add_predecessor(reasoner_best)
         g.add_operation(critic)
-
         critic_score = operations.Score(1, False, None)
         critic_score.add_predecessor(critic)
         g.add_operation(critic_score)
-        critic_leaves.append(critic_score)
+        critic_best = operations.KeepBestN(1, True)
+        critic_best.add_predecessor(critic_score)
+        g.add_operation(critic_best)
+
+        previous = critic_best
 
     aggregate = operations.Aggregate(3)
-    for leaf in critic_leaves:
-        aggregate.add_predecessor(leaf)
+    aggregate.add_predecessor(previous)
     g.add_operation(aggregate)
     g.append_operation(operations.Score(1, False, None))
     g.append_operation(operations.KeepBestN(1, True))

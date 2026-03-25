@@ -176,6 +176,10 @@ Confidence: <0.0-1.0>
 You are the final aggregator in multi-agent GoT.
 Fuse all refined partial answers and output exactly one line:
 Answer: <final answer>
+Hard constraints:
+- Do NOT introduce any new entity that does not appear in the provided partial answers or evidence summaries.
+- If multiple entities appear, choose only the entity that best answers the question.
+- Keep the answer minimal (entity/phrase), not a long explanation.
 </Instruction>
 
 <Question>
@@ -188,14 +192,16 @@ Answer: <final answer>
 
     ma_score_prompt = """<Instruction>
 You are an answer-judging agent.
-Compare the predicted answer against the reference answer and give a correctness score in [0, 1].
+Compare the predicted answer against the dataset ground truth answer and give a correctness score in [0, 1].
 Rules:
 - 1.0 means fully correct.
 - 0.0 means completely wrong.
-- If the prediction mentions key words/phrases from the reference answer, give partial credit (>0), not only 0/1.
+- If the prediction mentions key words/phrases from the ground truth answer, give partial credit (>0), not only 0/1.
 - Consider semantic equivalence, aliases, and minor surface-form variation.
 - You MUST output a decimal number in [0,1], e.g., 0.35, 0.70, 1.00.
-- Output ONLY one line in the exact format: Score: <float between 0 and 1>
+- Output EXACTLY two lines in this format:
+Score: <float between 0 and 1>
+GlobalCritique: <one-sentence evaluation of final answer quality>
 </Instruction>
 
 <Question>
@@ -206,18 +212,31 @@ Rules:
 {predicted}
 </PredictedAnswer>
 
-<ReferenceAnswer>
-{reference}
-</ReferenceAnswer>
+<GroundTruthAnswer>
+{ground_truth_answer}
+</GroundTruthAnswer>
 """
 
     def aggregation_prompt(self, state_dicts: List[Dict], **kwargs) -> str:
         if state_dicts and state_dicts[0].get("method", "").startswith("multiAgentGoT"):
             parts = []
-            for s in state_dicts:
-                subq = s.get("subquestion", "")
-                part = s.get("partial_answer") or s.get("current", "")
-                parts.append(f"- {subq}: {part}")
+            # 串行子图下，优先使用同一状态中累积的 partial/evidence 历史
+            serial_partials = state_dicts[0].get("serial_partials", [])
+            serial_evidence = state_dicts[0].get("serial_evidence", [])
+            if isinstance(serial_partials, list) and serial_partials:
+                for idx, p in enumerate(serial_partials):
+                    ev = serial_evidence[idx] if idx < len(serial_evidence) else ""
+                    parts.append(f"- Step {idx + 1} Partial: {p}")
+                    if ev:
+                        parts.append(f"  Evidence: {ev}")
+            else:
+                for s in state_dicts:
+                    subq = s.get("subquestion", "")
+                    part = s.get("partial_answer") or s.get("current", "")
+                    ev = s.get("evidence_summary", "")
+                    parts.append(f"- {subq}: {part}")
+                    if ev:
+                        parts.append(f"  Evidence: {ev}")
             return self.ma_aggregate_prompt.format(
                 question=state_dicts[0].get("question", ""),
                 partials_text="\n".join(parts),
@@ -310,10 +329,10 @@ Rules:
         method = state.get("method", "")
         if method.startswith("multiAgentGoT"):
             predicted = state.get("answer") or state.get("current") or state.get("partial_answer") or ""
-            reference = state.get("ground_truth_answer", "")
+            ground_truth_answer = state.get("ground_truth_answer", "")
             return self.ma_score_prompt.format(
                 question=state.get("question", ""),
                 predicted=predicted,
-                reference=reference,
+                ground_truth_answer=ground_truth_answer,
             )
         return ""

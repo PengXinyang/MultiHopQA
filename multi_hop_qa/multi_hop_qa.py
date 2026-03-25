@@ -1,9 +1,9 @@
 # 多跳推理示例：在 GoT 框架下对多文档问答进行 IO / CoT / ToT / GoT 多种推理方式。
 
+import argparse
 import logging
 import os
 import random
-import argparse
 import time
 from typing import List, Callable
 

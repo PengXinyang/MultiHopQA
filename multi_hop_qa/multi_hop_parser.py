@@ -98,15 +98,20 @@ class MultiHopParser(parser.Parser):
                         if not isinstance(sub_questions, list):
                             sub_questions = []
                         max_subq = int(state.get("max_subquestions", 4) or 4)
-                        for idx, subq in enumerate(sub_questions[:max_subq]):
-                            if not str(subq).strip():
-                                continue
+                        sub_questions = [str(x).strip() for x in sub_questions[:max_subq] if str(x).strip()]
+                        if not sub_questions:
+                            fallback = state.get("precomputed_subquestions", []) or []
+                            sub_questions = [str(x).strip() for x in fallback[:max_subq] if str(x).strip()]
+                        if sub_questions:
                             new_state = state.copy()
-                            new_state["sub_id"] = idx
-                            new_state["subquestion"] = str(subq).strip()
+                            new_state["subquestions"] = sub_questions
+                            new_state["sub_id"] = 0
+                            new_state["subquestion"] = sub_questions[0]
                             new_state["agent_role"] = "retriever"
                             new_state["phase"] = 1
                             new_state["candidate_answers"] = []
+                            new_state["serial_partials"] = []
+                            new_state["serial_evidence"] = []
                             new_states.append(new_state)
                     except Exception as e:
                         logging.warning("Failed to parse planner JSON: %s", e)
@@ -164,6 +169,20 @@ class MultiHopParser(parser.Parser):
                     cands = list(new_state.get("candidate_answers") or [])
                     cands.append(refined)
                     new_state["candidate_answers"] = cands
+                    serial_partials = list(new_state.get("serial_partials") or [])
+                    serial_evidence = list(new_state.get("serial_evidence") or [])
+                    serial_partials.append(refined)
+                    serial_evidence.append(new_state.get("evidence_summary", ""))
+                    new_state["serial_partials"] = serial_partials
+                    new_state["serial_evidence"] = serial_evidence
+                    subquestions = new_state.get("subquestions") or []
+                    cur_idx = int(new_state.get("sub_id", 0) or 0)
+                    if isinstance(subquestions, list) and cur_idx + 1 < len(subquestions):
+                        next_idx = cur_idx + 1
+                        new_state["sub_id"] = next_idx
+                        new_state["subquestion"] = subquestions[next_idx]
+                        new_state["agent_role"] = "retriever"
+                        new_state["phase"] = 1
                     new_states.append(new_state)
             else:
                 answer = self._extract_answer(text)
@@ -230,3 +249,19 @@ class MultiHopParser(parser.Parser):
             return [score] * len(states)
 
         return [0.0] * len(states)
+
+    def parse_score_critique(self, state: Dict, texts: List[str]) -> str:
+        """
+        解析评分阶段的全局评价，仅用于最终答案（aggregate 后）。
+        支持：
+        - GlobalCritique: ...
+        - Critique: ...
+        """
+        if not state or not state.get("method", "").startswith("multiAgentGoT"):
+            return ""
+        for text in texts:
+            for line in text.splitlines():
+                low = line.strip().lower()
+                if low.startswith("globalcritique:") or low.startswith("critique:"):
+                    return line.split(":", 1)[1].strip()
+        return ""

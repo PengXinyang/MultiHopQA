@@ -108,8 +108,26 @@ def combinedScore(state: Dict) -> float:
 
 
 def testMultiHop(state: Dict) -> bool:
-    """判断当前 thought 的答案是否与标准答案匹配（EM，用于 GroundTruth）。"""
+    """
+    GroundTruth 判定逻辑：
+    - 其它方法：没有大模型评分，所以使用 EM（严格匹配）
+    - multiAgentGoT：使用评分阈值（score > threshold 视为 solved）
+    """
     try:
+        method = (state.get("method") or "").strip()
+        if method.startswith("multiAgentGoT"):
+            threshold = state.get("solve_score_threshold", 0.9)
+            try:
+                threshold = float(threshold)
+            except Exception:
+                threshold = 0.9
+            raw_score = state.get("_thought_score", state.get("score", 0.0))
+            try:
+                judge_score = float(raw_score)
+            except Exception:
+                judge_score = 0.0
+            return judge_score > threshold
+
         ans = state.get("answer") or ""
         gold = state.get("ground_truth_answer") or ""
         answer_aliases = state.get("answer_aliases") or []

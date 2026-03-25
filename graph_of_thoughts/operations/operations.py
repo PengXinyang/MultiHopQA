@@ -30,15 +30,15 @@ class OperationType(Enum):
     """
     操作类型枚举，用作操作的唯一标识符。
     """
-    score: int = 0                      # 评分
-    validate_and_improve: int = 1       # 验证并改进
-    generate: int = 2                   # 生成
-    improve: int = 3                    # 改进
-    aggregate: int = 4                  # 聚合
-    keep_best_n: int = 5                # 保留最佳 N 个
-    keep_valid: int = 6                 # 保留有效
-    ground_truth_evaluator: int = 7     # 标准答案评估
-    selector: int = 8                   # 选择器
+    score: int = 0  # 评分
+    validate_and_improve: int = 1  # 验证并改进
+    generate: int = 2  # 生成
+    improve: int = 3  # 改进
+    aggregate: int = 4  # 聚合
+    keep_best_n: int = 5  # 保留最佳 N 个
+    keep_valid: int = 6  # 保留有效
+    ground_truth_evaluator: int = 7  # 标准答案评估
+    selector: int = 8  # 选择器
 
 
 class Operation(ABC):
@@ -56,8 +56,8 @@ class Operation(ABC):
         self.logger: logging.Logger = logging.getLogger(self.__class__.__name__)
         self.id: int = next(Operation._ids)
         self.predecessors: List[Operation] = []  # 前驱操作列表
-        self.successors: List[Operation] = []    # 后继操作列表
-        self.executed: bool = False              # 是否已执行
+        self.successors: List[Operation] = []  # 后继操作列表
+        self.executed: bool = False  # 是否已执行
 
     def can_be_executed(self) -> bool:
         """
@@ -260,6 +260,19 @@ class Score(Operation):
                     self.logger.debug("LLM 响应: %s", responses)
                     score = parser.parse_score_answer([thought.state], responses)[0]
                 new_thought.score = score
+                # multiAgentGoT 在最终答案评分阶段记录全局评价
+                try:
+                    if (
+                        thought.state.get("method", "").startswith("multiAgentGoT")
+                        and (thought.state.get("answer") or "").strip()
+                        and hasattr(parser, "parse_score_critique")
+                    ):
+                        critique = parser.parse_score_critique(thought.state, responses)
+                        if critique:
+                            new_thought.state = dict(new_thought.state or {})
+                            new_thought.state["global_critique"] = critique
+                except Exception:
+                    pass
                 self.thoughts.append(new_thought)
 
         self.logger.info("Score 操作 %d 对 %d 个思维评分完成", self.id, len(self.thoughts))
@@ -344,14 +357,14 @@ class ValidateAndImprove(Operation):
                     )
                     self.logger.debug("LLM 响应: %s", responses)
                     valid = parser.parse_validation_answer(current_thought.state, responses)
-                
+
                 current_thought.valid = valid
                 thought_list.append(current_thought)
-                
+
                 # 检查是否需要继续改进
                 if not self.improve or current_thought.valid or current_try >= self.num_tries:
                     break
-                
+
                 # 改进
                 improve_prompt = prompter.improve_prompt(**current_thought.state)
                 self.logger.debug("LLM 提示词: %s", improve_prompt)
@@ -360,7 +373,7 @@ class ValidateAndImprove(Operation):
                 state_update = parser.parse_improve_answer(current_thought.state, responses)
                 current_thought = Thought({**current_thought.state, **state_update})
                 current_try += 1
-            
+
             self.thoughts.append(thought_list)
 
         self.logger.info(
@@ -445,14 +458,14 @@ class Generate(Operation):
                 lm.query(prompt, num_responses=self.num_branches_response)
             )
             self.logger.debug("LLM 响应: %s", responses)
-            
+
             for new_state in parser.parse_generate_answer(base_state, responses):
                 new_state = {**base_state, **new_state}
                 self.thoughts.append(Thought(new_state))
                 self.logger.debug(
                     "创建新思维 %d，状态: %s", self.thoughts[-1].id, self.thoughts[-1].state
                 )
-        
+
         # 警告：生成的思维数量超出预期
         if (
                 len(self.thoughts)
@@ -460,7 +473,7 @@ class Generate(Operation):
                 and self.num_branches_prompt > 0
         ):
             self.logger.warning("Generate 操作 %d 创建的思维数量超出预期", self.id)
-        
+
         self.logger.info("Generate 操作 %d 创建了 %d 个新思维", self.id, len(self.thoughts))
 
 
@@ -776,7 +789,8 @@ class GroundTruth(Operation):
         for thought in previous_thoughts:
             new_thought = Thought.from_thought(thought)
             try:
-                new_thought.solved = self.ground_truth_evaluator(new_thought.state)
+                eval_state = {**(new_thought.state or {}), "_thought_score": new_thought.score}
+                new_thought.solved = self.ground_truth_evaluator(eval_state)
             except:
                 new_thought.solved = False
             self.thoughts.append(new_thought)
