@@ -29,4 +29,6 @@ from .operations import (
     Selector,
     GroundTruth,
     Improve,
+    CriticVerifyAndBacktrack,
+    BacktrackSignal,
 )

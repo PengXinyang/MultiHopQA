@@ -39,6 +39,13 @@ class OperationType(Enum):
     keep_valid: int = 6  # 保留有效
     ground_truth_evaluator: int = 7  # 标准答案评估
     selector: int = 8  # 选择器
+    critic_verify_and_backtrack: int = 9  # 带有回溯机制的评估器
+
+class BacktrackSignal(Exception):
+    """用于触发全局回溯的异常信号"""
+    def __init__(self, target_operation: Operation, reason: str = ""):
+        self.target_operation = target_operation
+        self.reason = reason
 
 
 class Operation(ABC):
@@ -859,3 +866,80 @@ class Selector(Operation):
             self.logger.debug("选中思维 %d，状态: %s", thought.id, thought.state)
 
         self.logger.info("Selector 操作 %d 选中了 %d 个思维", self.id, len(self.thoughts))
+
+
+class CriticVerifyAndBacktrack(Operation):
+    """
+    带有回溯机制的评估器操作：
+    由 Critic 角色检验前驱思维（证据和局部结论）。
+    如果检验不通过（REJECT），则抛出 BacktrackSignal 异常，打回给指定的起点重新生成。
+    """
+
+    operation_type: OperationType = OperationType.critic_verify_and_backtrack
+
+    def __init__(self, target_backtrack_op: Operation, max_retries: int = 3) -> None:
+        """
+        初始化 CriticVerifyAndBacktrack 操作。
+
+        :param target_backtrack_op: 如果检验失败，要回溯到的目标操作（通常是该分支的 Retriever）
+        :type target_backtrack_op: Operation
+        :param max_retries: 最大允许的回溯重试次数
+        :type max_retries: int
+        """
+        super().__init__()
+        self.target_backtrack_op: Operation = target_backtrack_op
+        self.max_retries: int = max_retries
+        self.current_retries: int = 0
+        self.thoughts: List[Thought] = []
+
+    def get_thoughts(self) -> List[Thought]:
+        return self.thoughts
+
+    def _execute(
+            self, lm: AbstractLanguageModel, prompter: Prompter, parser: Parser, **kwargs
+    ) -> None:
+        previous_thoughts: List[Thought] = self.get_previous_thoughts()
+        
+        if len(previous_thoughts) == 0:
+            return
+
+        for thought in previous_thoughts:
+            base_state = thought.state
+            
+            # 强制设置为 critic 角色
+            if hasattr(lm, "set_role"):
+                lm.set_role("critic")
+                
+            # Avoid passing agent_role twice (it already exists in base_state for multiAgentGoT).
+            prompt_kwargs = dict(base_state) if isinstance(base_state, dict) else {}
+            prompt_kwargs.pop("agent_role", None)
+            prompt = prompter.generate_prompt(1, agent_role="critic", **prompt_kwargs)
+            self.logger.debug("Critic LLM 提示词: %s", prompt)
+            
+            responses = lm.get_response_texts(lm.query(prompt, num_responses=1))
+            self.logger.debug("Critic LLM 响应: %s", responses)
+            
+            parsed_states = parser.parse_generate_answer(base_state, responses)
+            if not parsed_states:
+                continue
+                
+            parsed_state = parsed_states[0]
+            
+            # 检查 Critic 的验证决定
+            if parsed_state.get("validation_decision") == "REJECT":
+                if self.current_retries < self.max_retries:
+                    self.current_retries += 1
+                    self.logger.warning(
+                        "Critic 拒绝了当前结果，触发第 %d 次回溯。原因: %s", 
+                        self.current_retries, parsed_state.get("critique", "未知")
+                    )
+                    # 抛出回溯信号，打回给目标节点
+                    raise BacktrackSignal(self.target_backtrack_op, reason="Critic判定信息不相关或错误")
+                else:
+                    self.logger.warning("达到最大重试次数 (%d)，强行通过。", self.max_retries)
+            
+            # 如果 PASS 或达到最大重试次数，则保留该思维
+            new_state = {**base_state, **parsed_state}
+            self.thoughts.append(Thought(new_state))
+            
+        self.logger.info("CriticVerifyAndBacktrack 操作 %d 完成，保留了 %d 个思维", self.id, len(self.thoughts))

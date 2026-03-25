@@ -66,15 +66,11 @@ def got() -> operations.GraphOfOperations:
 
 def multiAgentGoT(num_branches: int = 4, local_branch_k: int = 2) -> operations.GraphOfOperations:
     """
-    多智能体 GoT Hybrid：
-    串行主链 + 每跳局部分叉（Retriever/Reasoner/Critic）+ 局部筛选，再进入下一跳。
-
-    结构：
-    Planner
-      -> [Hop i: Retriever(k) -> Score -> KeepBestN(1)
-                  -> Reasoner(k) -> Score -> KeepBestN(1)
-                  -> Critic(k)   -> Score -> KeepBestN(1)] x N
-      -> Aggregate(3) -> Score(LLM Judge) -> KeepBestN(1) -> GroundTruth
+    多智能体 GoT Hybrid (真正的图结构 + 全局动态回溯)：
+    Planner 将问题拆解为 N 个子问题，每个子问题启动一个并行的推理分支。
+    在每个分支中：Retriever 提取证据 -> Reasoner 生成局部结论 -> Critic 检验。
+    如果 Critic 判定不相关 (REJECT)，则触发回溯，打回给该分支的 Retriever 重新生成。
+    最后，Aggregate 节点等待所有分支成功完成，汇总所有证据生成最终答案。
     """
     g = operations.GraphOfOperations()
     planner = operations.Generate(1, 1)
@@ -82,15 +78,25 @@ def multiAgentGoT(num_branches: int = 4, local_branch_k: int = 2) -> operations.
 
     num_branches = max(1, int(num_branches))
     local_branch_k = max(1, int(local_branch_k))
-    previous = planner
+    
+    branch_leaves = []
 
-    for _ in range(num_branches):
+    for i in range(num_branches):
+        # Selector: 挑选出分配给当前分支的子问题 (sub_id == i)
+        sel = operations.Selector(
+            lambda thoughts, idx=i: [t for t in thoughts if t.state.get("sub_id") == idx]
+        )
+        sel.add_predecessor(planner)
+        g.add_operation(sel)
+
         retriever = operations.Generate(1, local_branch_k)
-        retriever.add_predecessor(previous)
+        retriever.add_predecessor(sel)
         g.add_operation(retriever)
+
         retriever_score = operations.Score(1, False, None)
         retriever_score.add_predecessor(retriever)
         g.add_operation(retriever_score)
+
         retriever_best = operations.KeepBestN(1, True)
         retriever_best.add_predecessor(retriever_score)
         g.add_operation(retriever_best)
@@ -98,29 +104,38 @@ def multiAgentGoT(num_branches: int = 4, local_branch_k: int = 2) -> operations.
         reasoner = operations.Generate(1, local_branch_k)
         reasoner.add_predecessor(retriever_best)
         g.add_operation(reasoner)
+
         reasoner_score = operations.Score(1, False, None)
         reasoner_score.add_predecessor(reasoner)
         g.add_operation(reasoner_score)
+
         reasoner_best = operations.KeepBestN(1, True)
         reasoner_best.add_predecessor(reasoner_score)
         g.add_operation(reasoner_best)
 
-        critic = operations.Generate(1, local_branch_k)
-        critic.add_predecessor(reasoner_best)
-        g.add_operation(critic)
-        critic_score = operations.Score(1, False, None)
-        critic_score.add_predecessor(critic)
-        g.add_operation(critic_score)
-        critic_best = operations.KeepBestN(1, True)
-        critic_best.add_predecessor(critic_score)
-        g.add_operation(critic_best)
+        # Critic 检验与回溯
+        critic_verify = operations.CriticVerifyAndBacktrack(target_backtrack_op=retriever, max_retries=2)
+        critic_verify.add_predecessor(reasoner_best)
+        g.add_operation(critic_verify)
 
-        previous = critic_best
+        branch_leaves.append(critic_verify)
 
-    aggregate = operations.Aggregate(3)
-    aggregate.add_predecessor(previous)
+    # 聚合所有并行分支的有效结论
+    aggregate = operations.Aggregate(1)
+    for leaf in branch_leaves:
+        aggregate.add_predecessor(leaf)
     g.add_operation(aggregate)
-    g.append_operation(operations.Score(1, False, None))
-    g.append_operation(operations.KeepBestN(1, True))
-    g.append_operation(operations.GroundTruth(score.testMultiHop))
+
+    final_score = operations.Score(1, False, None)
+    final_score.add_predecessor(aggregate)
+    g.add_operation(final_score)
+
+    keep_best = operations.KeepBestN(1, True)
+    keep_best.add_predecessor(final_score)
+    g.add_operation(keep_best)
+
+    gt = operations.GroundTruth(score.testMultiHop)
+    gt.add_predecessor(keep_best)
+    g.add_operation(gt)
+
     return g

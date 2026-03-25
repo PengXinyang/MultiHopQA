@@ -60,6 +60,7 @@ def contextToTextWithIndices(context: List) -> str:
 
 
 def setupRunDirectory(
+        dataset: str,
         results_base_dir: str,
         lm_name: str,
         methods: List[Callable],
@@ -69,6 +70,7 @@ def setupRunDirectory(
     创建本次运行的结果目录，保存配置文件，设置日志。
     
     Args:
+        dataset: 运行哪个数据集
         results_base_dir: 结果根目录（如 "results"）
         lm_name: 语言模型名称
         methods: 方法列表（用于命名和创建子目录）
@@ -81,7 +83,7 @@ def setupRunDirectory(
 
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     method_names = "-".join([m.__name__ for m in methods])
-    run_dir = os.path.join(results_base_dir, f"{lm_name}_{method_names}_{timestamp}")
+    run_dir = os.path.join(results_base_dir, dataset, f"{lm_name}_{method_names}_{timestamp}")
     os.makedirs(run_dir)
 
     # 为每个方法创建子目录

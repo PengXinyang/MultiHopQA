@@ -115,10 +115,19 @@ Output ONLY valid JSON:
 </Context>"""
 
     ma_retriever_prompt = """<Instruction>
-You are the Retriever agent. For the sub-question, extract concise evidence from context.
-Return ONLY JSON in this format:
-{{"evidence_spans":[["title", sent_idx], ...], "evidence_summary":"..."}}
-If sentence index is unknown, use 0.
+You are the Retriever agent. For the given SubQuestion, you MUST extract evidence from the provided Context.
+
+Hard constraints:
+- Output ONLY valid JSON (no markdown, no extra text).
+- The JSON MUST contain a NON-EMPTY "evidence_spans" list.
+- Each evidence span MUST be in the form ["title", sent_idx].
+- "title" MUST match EXACTLY one of the document titles in the Context (the text inside [...] headers).
+- If you cannot identify the exact sentence index, use sent_idx = 0 (do NOT output null).
+- Prefer spans that DIRECTLY support answering the SubQuestion.
+- If the answer is not explicitly stated, still choose the single MOST RELEVANT document title as evidence (do not leave evidence_spans empty).
+
+Return ONLY JSON in this exact format:
+{{"evidence_spans":[["title", sent_idx], ...], "evidence_summary":"one short evidence summary grounded in the cited span(s)"}}
 </Instruction>
 
 <SubQuestion>
@@ -150,8 +159,12 @@ Confidence: <0.0-1.0>
 
     ma_critic_prompt = """<Instruction>
 You are the Critic agent. Judge and refine the partial answer.
+You MUST also VERIFY if the extracted evidence and partial answer are relevant and correct for the given subquestion.
+If they are irrelevant, hallucinated, or logically wrong, you MUST output "Validation: REJECT".
+If they are helpful and correct, output "Validation: PASS".
 Return exactly:
 Critique: <short judgement>
+Validation: <PASS or REJECT>
 RefinedPartial: <better partial answer>
 Confidence: <0.0-1.0>
 </Instruction>
@@ -220,23 +233,13 @@ GlobalCritique: <one-sentence evaluation of final answer quality>
     def aggregation_prompt(self, state_dicts: List[Dict], **kwargs) -> str:
         if state_dicts and state_dicts[0].get("method", "").startswith("multiAgentGoT"):
             parts = []
-            # 串行子图下，优先使用同一状态中累积的 partial/evidence 历史
-            serial_partials = state_dicts[0].get("serial_partials", [])
-            serial_evidence = state_dicts[0].get("serial_evidence", [])
-            if isinstance(serial_partials, list) and serial_partials:
-                for idx, p in enumerate(serial_partials):
-                    ev = serial_evidence[idx] if idx < len(serial_evidence) else ""
-                    parts.append(f"- Step {idx + 1} Partial: {p}")
-                    if ev:
-                        parts.append(f"  Evidence: {ev}")
-            else:
-                for s in state_dicts:
-                    subq = s.get("subquestion", "")
-                    part = s.get("partial_answer") or s.get("current", "")
-                    ev = s.get("evidence_summary", "")
-                    parts.append(f"- {subq}: {part}")
-                    if ev:
-                        parts.append(f"  Evidence: {ev}")
+            for s in state_dicts:
+                subq = s.get("subquestion", "")
+                part = s.get("partial_answer") or s.get("current", "")
+                ev = s.get("evidence_summary", "")
+                parts.append(f"- {subq}: {part}")
+                if ev:
+                    parts.append(f"  Evidence: {ev}")
             return self.ma_aggregate_prompt.format(
                 question=state_dicts[0].get("question", ""),
                 partials_text="\n".join(parts),

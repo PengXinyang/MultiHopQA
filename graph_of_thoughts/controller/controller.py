@@ -7,6 +7,7 @@ import logging
 from typing import List
 from graph_of_thoughts.language_models import AbstractLanguageModel
 from graph_of_thoughts.operations import GraphOfOperations, Thought
+from graph_of_thoughts.operations.operations import BacktrackSignal
 from graph_of_thoughts.prompter import Prompter
 from graph_of_thoughts.parser import Parser
 
@@ -47,6 +48,15 @@ class Controller:
         self.problem_parameters = problem_parameters
         self.run_executed = False
 
+    def _reset_descendants(self, operation) -> None:
+        """递归重置目标操作及其所有后继操作的状态"""
+        operation.executed = False
+        if hasattr(operation, 'thoughts'):
+            operation.thoughts = []
+        for succ in operation.successors:
+            if succ.executed:
+                self._reset_descendants(succ)
+
     def run(self) -> None:
         """
         运行控制器，按拓扑顺序执行操作图中的所有操作。
@@ -69,18 +79,33 @@ class Controller:
         while len(execution_queue) > 0:
             current_operation = execution_queue.pop(0)
             self.logger.info("正在执行操作 %s", current_operation.operation_type)
-            current_operation.execute(
-                self.lm, self.prompter, self.parser, **self.problem_parameters
-            )
-            self.logger.info("操作 %s 执行完成", current_operation.operation_type)
             
-            # 检查后继操作是否可以执行
-            for operation in current_operation.successors:
-                assert (
-                    operation in self.graph.operations
-                ), "操作的后继不在操作图中"
-                if operation.can_be_executed():
-                    execution_queue.append(operation)
+            try:
+                current_operation.execute(
+                    self.lm, self.prompter, self.parser, **self.problem_parameters
+                )
+                self.logger.info("操作 %s 执行完成", current_operation.operation_type)
+                
+                # 检查后继操作是否可以执行
+                for operation in current_operation.successors:
+                    assert (
+                        operation in self.graph.operations
+                    ), "操作的后继不在操作图中"
+                    if operation.can_be_executed() and operation not in execution_queue:
+                        execution_queue.append(operation)
+                        
+            except BacktrackSignal as backtrack:
+                self.logger.warning("触发全局回溯！原因: %s", backtrack.reason)
+                target_op = backtrack.target_operation
+                
+                # 1. 重置目标节点及其所有子节点的状态
+                self._reset_descendants(target_op)
+                
+                # 2. 重新计算当前可执行队列
+                execution_queue = [
+                    op for op in self.graph.operations
+                    if op.can_be_executed() and not op.executed
+                ]
         
         self.logger.info("所有操作执行完成")
         self.run_executed = True

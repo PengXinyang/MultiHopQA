@@ -22,7 +22,8 @@ def run(
         data_ids: List[int],
         methods: List[Callable[[], operations.GraphOfOperations]],
         budget: float,
-        lm_name: str,
+        role_model_names: dict[str, str],
+        dataset: str,
         data_path: str = None,
         max_samples: int = 100,
 ) -> float:
@@ -34,7 +35,8 @@ def run(
         data_ids: 要运行的样本索引列表，None 或空列表表示全部
         methods: 方法列表，每个方法返回一个 GraphOfOperations
         budget: 预算（美元），超出后停止
-        lm_name: 语言模型名称
+        role_model_names: 语言模型名称
+        dataset: 运行哪个数据集
         data_path: 数据集路径，None 则使用默认 HotpotQA
         max_samples: 最大加载样本数
     
@@ -61,30 +63,22 @@ def run(
 
     # 4. 创建运行目录和配置
     results_dir = os.path.join(os.path.dirname(__file__), "results")
-    run_dir = utils.setupRunDirectory(results_base_dir=results_dir, lm_name=lm_name, methods=methods, config_extra={
-        "data_path": data_path,
-        "data_ids": data_ids[:len(selected)],
-        "budget": budget,
-        "max_samples": max_samples,
-    })
+    run_dir = utils.setupRunDirectory(dataset, results_base_dir=results_dir, lm_name=role_model_names["default"],
+                                      methods=methods, config_extra={
+            "data_path": data_path,
+            "data_ids": data_ids[:len(selected)],
+            "budget": budget,
+            "max_samples": max_samples,
+        })
 
     # 5. 获取语言模型配置路径
     config_lm_path = utils.getLmConfigPath(os.path.dirname(__file__))
-
-    # 角色模型分配（方案A：一个角色一个智能体/模型实例）
-    role_model_names = {
-        "planner": lm_name,
-        "retriever": "gemini-2.5-flash-gcli",
-        "reasoner": "gemini-2.5-pro-gcli",
-        "critic": "gemini-2.5-pro-gcli",
-        "default": lm_name,
-    }
 
     # 6. 运行实验
     spent = 0.0
     prompter = MultiHopPrompter()
     parser = MultiHopParser()
-    
+
     for idx, item in enumerate(selected, start=1):
         print(f"正在运行第 {idx}/{len(selected)} 个问题，_id={item.get('_id', '')}")
         if budget <= 0:
@@ -109,14 +103,14 @@ def run(
             else:
                 lm = language_models.build_language_model(
                     config_lm_path,
-                    model_name=lm_name,
+                    model_name=role_model_names["default"],
                     cache=True,
                 )
-            
+
             # 执行单个方法
             cost = utils.runSingleMethod(item=item, method=method, lm=lm, prompter=prompter, parser=parser,
                                          run_dir=run_dir)
-            
+
             budget -= cost
             spent += cost
 
@@ -130,18 +124,17 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default="hotpotqa",
                         choices=["hotpotqa", "musique_ans", "musique_full"],
                         help="数据集名称")
-    parser.add_argument("--lm", type=str, default="gemini-2.5-flash-gcli",
-                        help="语言模型名称")
     parser.add_argument("--budget", type=float, default=5.0,
                         help="预算（美元）")
     parser.add_argument("--num_samples", type=int, default=1,
                         help="随机抽取的样本数")
     args = parser.parse_args()
-    
+
     # 数据集路径和大小映射
     DATASET_CONFIG = {
         "hotpotqa": {
-            "path": os.path.join(os.path.dirname(__file__), "..", "dataset", "hotpotQA", "hotpot_dev_distractor_v1.json"),
+            "path": os.path.join(os.path.dirname(__file__), "..", "dataset", "hotpotQA",
+                                 "hotpot_dev_distractor_v1.json"),
             "size": 7405,
         },
         "musique_ans": {
@@ -153,11 +146,11 @@ if __name__ == "__main__":
             "size": 4834,
         },
     }
-    
+
     config = DATASET_CONFIG[args.dataset]
     data_path = config["path"]
     len_data = config["size"]
-    
+
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"数据集文件不存在: {data_path}")
 
@@ -165,18 +158,29 @@ if __name__ == "__main__":
     # seed = 42
     random.seed(seed)
     samples = random.sample(range(len_data), min(args.num_samples, len_data))
-    approaches = [io, cot, tot, got, multiAgentGoT]
-    
+    #approaches = [io, cot, tot, got, multiAgentGoT]
+    approaches = [multiAgentGoT]
+
+    # 角色模型分配（方案A：一个角色一个智能体/模型实例）
+    role_model_names = {
+        "planner": "gemini-2.5-pro",
+        "retriever": "gemini-2.5-flash",
+        "reasoner": "gemini-2.5-pro",
+        "critic": "gemini-2.5-pro",
+        "default": "gemini-2.5-pro",
+    }
+
     print(f"数据集: {args.dataset}")
-    print(f"语言模型: {args.lm}")
+    print(f"语言模型: {role_model_names}")
     print(f"样本数: {len(samples)}")
     print(f"预算: ${args.budget}")
-    
+
     spent = run(
         samples,
         approaches,
         args.budget,
-        args.lm,
+        role_model_names,
+        args.dataset,
         data_path=data_path,
         max_samples=len_data,
     )

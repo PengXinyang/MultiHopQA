@@ -13,6 +13,124 @@ class MultiHopParser(parser.Parser):
         self.cache = {}
 
     @staticmethod
+    def _norm_title(s: str) -> str:
+        return re.sub(r"\s+", " ", (s or "").strip()).lower()
+
+    @classmethod
+    def _title_to_context_idx(cls, context: List, title: str) -> int | None:
+        """
+        Map a document title to its paragraph index in `context` (Hotpot-style: [[title, [sents]], ...]).
+        Returns None if not found.
+        """
+        if not isinstance(context, list) or not title:
+            return None
+        needle = cls._norm_title(title)
+        for i, item in enumerate(context):
+            if isinstance(item, (list, tuple)) and item:
+                if cls._norm_title(str(item[0])) == needle:
+                    return i
+        return None
+
+    @classmethod
+    def _infer_paragraph_support_idx(cls, context: List, evidence_spans: List) -> int | None:
+        """
+        Infer a supporting paragraph index from evidence spans.
+        evidence_spans expected like: [["title", sent_idx], ...]
+        """
+        if not isinstance(evidence_spans, list) or not evidence_spans:
+            return None
+
+        # Prefer the first span that maps to a known title in context
+        for span in evidence_spans:
+            title = None
+            if isinstance(span, (list, tuple)) and span:
+                title = span[0]
+            elif isinstance(span, dict):
+                title = span.get("title") or span.get("doc_title")
+            if title:
+                idx = cls._title_to_context_idx(context, str(title))
+                if idx is not None:
+                    return idx
+        return None
+
+    @staticmethod
+    def _try_update_decomposition_support_idx(state: Dict, sub_id: int, para_idx: int) -> None:
+        """
+        Best-effort: write back paragraph_support_idx into state["question_decomposition"][sub_id]
+        if it exists and aligns with sub_id.
+        """
+        if not isinstance(state, dict):
+            return
+        if not isinstance(sub_id, int) or sub_id < 0:
+            return
+        if not isinstance(para_idx, int) or para_idx < 0:
+            return
+        decomp = state.get("question_decomposition")
+        if not isinstance(decomp, list) or sub_id >= len(decomp):
+            return
+        step = decomp[sub_id]
+        if not isinstance(step, dict):
+            return
+        step["paragraph_support_idx"] = para_idx
+
+    @staticmethod
+    def _keyword_tokens(text: str) -> List[str]:
+        toks = re.findall(r"[A-Za-z0-9]+", (text or "").lower())
+        stop = {
+            "the", "a", "an", "of", "to", "in", "on", "for", "and", "or", "was", "were",
+            "is", "are", "who", "what", "where", "when", "which", "does", "did", "do",
+            # very common relation words that don't help pick a document
+            "creator", "developed", "educated", "education", "born", "birth", "date", "year",
+        }
+        out: List[str] = []
+        for t in toks:
+            if len(t) <= 2:
+                continue
+            if t in stop:
+                continue
+            out.append(t)
+        return out[:12]
+
+    @classmethod
+    def _fallback_evidence_from_context(cls, context: List, subquestion: str) -> List:
+        """
+        If the model fails to provide evidence_spans, pick the most relevant title from context.
+        Returns evidence_spans in the expected format, or [] if context is unusable.
+        """
+        if not isinstance(context, list) or not context:
+            return []
+
+        keywords = cls._keyword_tokens(subquestion)
+        # If we cannot extract keywords, pick the first doc.
+        if not keywords:
+            first = context[0]
+            if isinstance(first, (list, tuple)) and first:
+                return [[str(first[0]), 0]]
+            return []
+
+        best_i = None
+        best_score = -1
+        for i, item in enumerate(context):
+            if not (isinstance(item, (list, tuple)) and len(item) >= 2):
+                continue
+            title = str(item[0])
+            sents = item[1]
+            para = " ".join(sents) if isinstance(sents, list) else str(sents)
+            hay = f"{title} {para}".lower()
+            score = 0
+            for k in keywords:
+                if k in hay:
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best_i = i
+
+        if best_i is None:
+            return []
+        best_item = context[best_i]
+        return [[str(best_item[0]), 0]]
+
+    @staticmethod
     def _extract_answer(text: str) -> str:
         text = text.strip()
         for prefix in ("Answer:", "answer:"):
@@ -103,16 +221,15 @@ class MultiHopParser(parser.Parser):
                             fallback = state.get("precomputed_subquestions", []) or []
                             sub_questions = [str(x).strip() for x in fallback[:max_subq] if str(x).strip()]
                         if sub_questions:
-                            new_state = state.copy()
-                            new_state["subquestions"] = sub_questions
-                            new_state["sub_id"] = 0
-                            new_state["subquestion"] = sub_questions[0]
-                            new_state["agent_role"] = "retriever"
-                            new_state["phase"] = 1
-                            new_state["candidate_answers"] = []
-                            new_state["serial_partials"] = []
-                            new_state["serial_evidence"] = []
-                            new_states.append(new_state)
+                            for idx, sq in enumerate(sub_questions):
+                                new_state = state.copy()
+                                new_state["subquestions"] = sub_questions
+                                new_state["sub_id"] = idx
+                                new_state["subquestion"] = sq
+                                new_state["agent_role"] = "retriever"
+                                new_state["phase"] = 1
+                                new_state["candidate_answers"] = []
+                                new_states.append(new_state)
                     except Exception as e:
                         logging.warning("Failed to parse planner JSON: %s", e)
                 elif state.get("agent_role") == "retriever":
@@ -128,6 +245,32 @@ class MultiHopParser(parser.Parser):
                     except Exception:
                         new_state["evidence_spans"] = []
                         new_state["evidence_summary"] = text.strip()
+
+                    # Fallback: ensure evidence_spans is non-empty to avoid breaking downstream reasoning.
+                    if not new_state.get("evidence_spans"):
+                        fb = self._fallback_evidence_from_context(
+                            context=new_state.get("context", []),
+                            subquestion=str(new_state.get("subquestion", "")),
+                        )
+                        if fb:
+                            new_state["evidence_spans"] = fb
+                            if not new_state.get("evidence_summary"):
+                                new_state["evidence_summary"] = f"Relevant document: {fb[0][0]}"
+
+                    # Infer paragraph_support_idx for this subquestion (best-effort).
+                    try:
+                        para_idx = self._infer_paragraph_support_idx(
+                            context=new_state.get("context", []),
+                            evidence_spans=new_state.get("evidence_spans", []),
+                        )
+                        new_state["pred_paragraph_support_idx"] = para_idx
+                        if para_idx is not None:
+                            self._try_update_decomposition_support_idx(
+                                new_state, int(new_state.get("sub_id", -1)), int(para_idx)
+                            )
+                    except Exception:
+                        new_state["pred_paragraph_support_idx"] = None
+
                     new_state["agent_role"] = "reasoner"
                     new_state["phase"] = 2
                     new_states.append(new_state)
@@ -149,18 +292,22 @@ class MultiHopParser(parser.Parser):
                 elif state.get("agent_role") == "critic":
                     critique = ""
                     refined = ""
+                    validation = "PASS"
                     for line in text.splitlines():
                         low = line.strip().lower()
                         if low.startswith("critique:"):
                             critique = line.split(":", 1)[1].strip()
-                        if low.startswith("refinedpartial:"):
+                        elif low.startswith("refinedpartial:"):
                             refined = line.split(":", 1)[1].strip()
+                        elif low.startswith("validation:"):
+                            validation = line.split(":", 1)[1].strip().upper()
                     if not refined:
                         refined = state.get("partial_answer", "")
                     new_state = state.copy()
                     new_state["critique"] = critique
                     new_state["partial_answer"] = refined
                     new_state["current"] = refined
+                    new_state["validation_decision"] = validation
                     new_state["confidence"] = self._extract_float_after(
                         "Confidence", text, new_state.get("confidence", 0.5)
                     )
@@ -169,20 +316,6 @@ class MultiHopParser(parser.Parser):
                     cands = list(new_state.get("candidate_answers") or [])
                     cands.append(refined)
                     new_state["candidate_answers"] = cands
-                    serial_partials = list(new_state.get("serial_partials") or [])
-                    serial_evidence = list(new_state.get("serial_evidence") or [])
-                    serial_partials.append(refined)
-                    serial_evidence.append(new_state.get("evidence_summary", ""))
-                    new_state["serial_partials"] = serial_partials
-                    new_state["serial_evidence"] = serial_evidence
-                    subquestions = new_state.get("subquestions") or []
-                    cur_idx = int(new_state.get("sub_id", 0) or 0)
-                    if isinstance(subquestions, list) and cur_idx + 1 < len(subquestions):
-                        next_idx = cur_idx + 1
-                        new_state["sub_id"] = next_idx
-                        new_state["subquestion"] = subquestions[next_idx]
-                        new_state["agent_role"] = "retriever"
-                        new_state["phase"] = 1
                     new_states.append(new_state)
             else:
                 answer = self._extract_answer(text)
