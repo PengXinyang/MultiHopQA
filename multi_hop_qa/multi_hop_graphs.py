@@ -72,25 +72,23 @@ def multiAgentGoT(num_branches: int = 4, local_branch_k: int = 2) -> operations.
     如果 Critic 判定不相关 (REJECT)，则触发回溯，打回给该分支的 Retriever 重新生成。
     最后，Aggregate 节点等待所有分支成功完成，汇总所有证据生成最终答案。
     """
+    # 重新组织为“逐跳推进”的通用结构：
+    # planner -> (hop0 retriever->reasoner->critic) -> advance -> (hop1 ...) -> ... -> aggregate
+    #
+    # 这样可以在 state 中保存 bindings（如 #1=#2...），让后续 hop 显式依赖前一 hop 的输出，
+    # 避免并行分支导致的“链路断裂/实体不一致”。
     g = operations.GraphOfOperations()
     planner = operations.Generate(1, 1)
     g.append_operation(planner)
 
-    num_branches = max(1, int(num_branches))
+    num_hops = max(1, int(num_branches))
     local_branch_k = max(1, int(local_branch_k))
-    
-    branch_leaves = []
 
-    for i in range(num_branches):
-        # Selector: 挑选出分配给当前分支的子问题 (sub_id == i)
-        sel = operations.Selector(
-            lambda thoughts, idx=i: [t for t in thoughts if t.state.get("sub_id") == idx]
-        )
-        sel.add_predecessor(planner)
-        g.add_operation(sel)
-
+    prev = planner
+    for hop in range(num_hops):
+        # Retriever
         retriever = operations.Generate(1, local_branch_k)
-        retriever.add_predecessor(sel)
+        retriever.add_predecessor(prev)
         g.add_operation(retriever)
 
         retriever_score = operations.Score(1, False, None)
@@ -101,6 +99,7 @@ def multiAgentGoT(num_branches: int = 4, local_branch_k: int = 2) -> operations.
         retriever_best.add_predecessor(retriever_score)
         g.add_operation(retriever_best)
 
+        # Reasoner
         reasoner = operations.Generate(1, local_branch_k)
         reasoner.add_predecessor(retriever_best)
         g.add_operation(reasoner)
@@ -113,17 +112,25 @@ def multiAgentGoT(num_branches: int = 4, local_branch_k: int = 2) -> operations.
         reasoner_best.add_predecessor(reasoner_score)
         g.add_operation(reasoner_best)
 
-        # Critic 检验与回溯
-        critic_verify = operations.CriticVerifyAndBacktrack(target_backtrack_op=retriever, max_retries=2)
+        # Critic w/ backtrack to this hop's retriever
+        critic_verify = operations.CriticVerifyAndBacktrack(
+            target_backtrack_op=retriever, max_retries=2
+        )
         critic_verify.add_predecessor(reasoner_best)
         g.add_operation(critic_verify)
 
-        branch_leaves.append(critic_verify)
+        prev = critic_verify
 
-    # 聚合所有并行分支的有效结论
+        # Advance to next hop (except last hop)
+        if hop != num_hops - 1:
+            adv = operations.AdvanceSubquestion(max_hops=num_hops)
+            adv.add_predecessor(prev)
+            g.add_operation(adv)
+            prev = adv
+
+    # 聚合最终结果（此时 state 里已积累 bindings / 每跳 partials）
     aggregate = operations.Aggregate(1)
-    for leaf in branch_leaves:
-        aggregate.add_predecessor(leaf)
+    aggregate.add_predecessor(prev)
     g.add_operation(aggregate)
 
     final_score = operations.Score(1, False, None)

@@ -27,6 +27,7 @@ from .operations import (
     KeepBestN,
     KeepValid,
     Selector,
+    AdvanceSubquestion,
     GroundTruth,
     Improve,
     CriticVerifyAndBacktrack,

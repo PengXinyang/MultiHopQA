@@ -17,4 +17,5 @@ from .llamachat_hf import Llama2HF
 from .deepseek import DeepSeek
 from .gemini import Gemini
 from .gcli_gemini import GCLIGemini
+from .rotating import RotatingLanguageModel, LightweightModelGroup, HeavyModelGroup
 from .factory import build_language_model

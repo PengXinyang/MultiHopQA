@@ -221,15 +221,17 @@ class MultiHopParser(parser.Parser):
                             fallback = state.get("precomputed_subquestions", []) or []
                             sub_questions = [str(x).strip() for x in fallback[:max_subq] if str(x).strip()]
                         if sub_questions:
-                            for idx, sq in enumerate(sub_questions):
-                                new_state = state.copy()
-                                new_state["subquestions"] = sub_questions
-                                new_state["sub_id"] = idx
-                                new_state["subquestion"] = sq
-                                new_state["agent_role"] = "retriever"
-                                new_state["phase"] = 1
-                                new_state["candidate_answers"] = []
-                                new_states.append(new_state)
+                            # Sequential multi-hop: start from hop0 and advance via AdvanceSubquestion op.
+                            new_state = state.copy()
+                            new_state["subquestions"] = sub_questions
+                            new_state["sub_id"] = 0
+                            new_state["subquestion"] = sub_questions[0]
+                            new_state["agent_role"] = "retriever"
+                            new_state["phase"] = 1
+                            new_state["bindings"] = {}
+                            new_state["hop_history"] = []
+                            new_state["candidate_answers"] = []
+                            new_states.append(new_state)
                     except Exception as e:
                         logging.warning("Failed to parse planner JSON: %s", e)
                 elif state.get("agent_role") == "retriever":
@@ -293,10 +295,16 @@ class MultiHopParser(parser.Parser):
                     critique = ""
                     refined = ""
                     validation = "PASS"
+                    reason_code = ""
+                    suggested_action = ""
                     for line in text.splitlines():
                         low = line.strip().lower()
                         if low.startswith("critique:"):
                             critique = line.split(":", 1)[1].strip()
+                        elif low.startswith("reasoncode:"):
+                            reason_code = line.split(":", 1)[1].strip()
+                        elif low.startswith("suggestedaction:"):
+                            suggested_action = line.split(":", 1)[1].strip()
                         elif low.startswith("refinedpartial:"):
                             refined = line.split(":", 1)[1].strip()
                         elif low.startswith("validation:"):
@@ -308,6 +316,10 @@ class MultiHopParser(parser.Parser):
                     new_state["partial_answer"] = refined
                     new_state["current"] = refined
                     new_state["validation_decision"] = validation
+                    if reason_code:
+                        new_state["reason_code"] = reason_code
+                    if suggested_action:
+                        new_state["suggested_action"] = suggested_action
                     new_state["confidence"] = self._extract_float_after(
                         "Confidence", text, new_state.get("confidence", 0.5)
                     )
@@ -316,6 +328,22 @@ class MultiHopParser(parser.Parser):
                     cands = list(new_state.get("candidate_answers") or [])
                     cands.append(refined)
                     new_state["candidate_answers"] = cands
+
+                    # Record hop trace for final aggregation (kept across AdvanceSubquestion).
+                    hist = new_state.get("hop_history") or []
+                    if not isinstance(hist, list):
+                        hist = []
+                    hist.append(
+                        {
+                            "sub_id": int(new_state.get("sub_id", 0) or 0),
+                            "subquestion": str(new_state.get("subquestion", "")),
+                            "partial_answer": str(new_state.get("partial_answer", "")),
+                            "evidence_summary": str(new_state.get("evidence_summary", "")),
+                            "validation_decision": str(new_state.get("validation_decision", "")),
+                            "reason_code": str(new_state.get("reason_code", "")),
+                        }
+                    )
+                    new_state["hop_history"] = hist
                     new_states.append(new_state)
             else:
                 answer = self._extract_answer(text)

@@ -94,18 +94,37 @@ def run(
             if method.__name__.startswith("multiAgentGoT"):
                 role_to_lm = {}
                 for role, model_name in role_model_names.items():
-                    role_to_lm[role] = language_models.build_language_model(
+                    if model_name == "__lite__":
+                        role_to_lm[role] = language_models.LightweightModelGroup(
+                            config_lm_path, cache=True, retries_per_model=3
+                        )
+                    elif model_name == "__heavy__":
+                        role_to_lm[role] = language_models.HeavyModelGroup(
+                            config_lm_path, cache=True, retries_per_model=3
+                        )
+                    else:
+                        role_to_lm[role] = language_models.build_language_model(
+                            config_lm_path,
+                            model_name=model_name,
+                            cache=True,
+                        )
+                lm = RoleAwareLM(role_to_lm=role_to_lm, default_role="default")
+            else:
+                model_name = role_model_names["default"]
+                if model_name == "__lite__":
+                    lm = language_models.LightweightModelGroup(
+                        config_lm_path, cache=True, retries_per_model=3
+                    )
+                elif model_name == "__heavy__":
+                    lm = language_models.HeavyModelGroup(
+                        config_lm_path, cache=True, retries_per_model=3
+                    )
+                else:
+                    lm = language_models.build_language_model(
                         config_lm_path,
                         model_name=model_name,
                         cache=True,
                     )
-                lm = RoleAwareLM(role_to_lm=role_to_lm, default_role="default")
-            else:
-                lm = language_models.build_language_model(
-                    config_lm_path,
-                    model_name=role_model_names["default"],
-                    cache=True,
-                )
 
             # 执行单个方法
             cost = utils.runSingleMethod(item=item, method=method, lm=lm, prompter=prompter, parser=parser,
@@ -128,6 +147,12 @@ if __name__ == "__main__":
                         help="预算（美元）")
     parser.add_argument("--num_samples", type=int, default=1,
                         help="随机抽取的样本数")
+    parser.add_argument(
+        "--sample_id",
+        type=str,
+        default="",
+        help="按样本 id/_id 指定运行单题（优先于随机抽样）",
+    )
     args = parser.parse_args()
 
     # 数据集路径和大小映射
@@ -157,17 +182,35 @@ if __name__ == "__main__":
     seed = int(time.time())
     # seed = 42
     random.seed(seed)
-    samples = random.sample(range(len_data), min(args.num_samples, len_data))
+    # samples = random.sample(range(len_data), min(args.num_samples, len_data))
+    # 支持按 id/_id 定位样本（用于复现实验与调试）
+    if args.sample_id and args.sample_id.strip():
+        target = args.sample_id.strip()
+        data = utils.loadMultiHopData(data_path, max_samples=len_data)
+        hits = []
+        for i, item in enumerate(data):
+            sid = str(item.get("_id") or item.get("id") or "")
+            if sid == target:
+                hits.append(i)
+        if not hits:
+            raise ValueError(f"未在数据集中找到 sample_id={target}")
+        samples = hits
+    else:
+        samples = random.sample(range(len_data), min(args.num_samples, len_data))
     #approaches = [io, cot, tot, got, multiAgentGoT]
     approaches = [multiAgentGoT]
 
     # 角色模型分配（方案A：一个角色一个智能体/模型实例）
+    # 角色模型分配
+    # - "__lite__": 轻量模型轮换池（见 graph_of_thoughts.language_models.rotating）
+    # - "__heavy__": 复杂模型轮换池（见 graph_of_thoughts.language_models.rotating）
+    # - 其它字符串：单一模型（config.json 的 key）
     role_model_names = {
-        "planner": "gemini-2.5-pro",
-        "retriever": "gemini-2.5-flash",
-        "reasoner": "gemini-2.5-pro",
-        "critic": "gemini-2.5-pro",
-        "default": "gemini-2.5-pro",
+        "planner": "__heavy__",
+        "retriever": "__lite__",
+        "reasoner": "__heavy__",
+        "critic": "__heavy__",
+        "default": "__heavy__",
     }
 
     print(f"数据集: {args.dataset}")

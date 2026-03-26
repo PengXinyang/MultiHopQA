@@ -95,24 +95,21 @@ class DeepSeek(AbstractLanguageModel):
             return self.response_cache[query]
 
         if num_responses == 1:
-            response = self.chat([{"role": "user", "content": query}], num_responses)
+            response = self.chat([{"role": "user", "content": query}], 1)
         else:
-            # 多响应请求：分批处理，带重试机制
-            response: List[ChatCompletion] = []
-            next_try = num_responses
+            # DeepSeek(OpenAI-compatible) 端点常见限制：仅支持 n=1。
+            # 因此这里通过多次 n=1 的调用来“模拟”多样本，避免 400: Invalid n value。
+            response = []
             total_num_attempts = num_responses
-            while num_responses > 0 and total_num_attempts > 0:
+            remaining = num_responses
+            while remaining > 0 and total_num_attempts > 0:
                 try:
-                    assert next_try > 0
-                    res = self.chat([{"role": "user", "content": query}], next_try)
+                    res = self.chat([{"role": "user", "content": query}], 1)
                     response.append(res)
-                    num_responses -= next_try
-                    next_try = min(num_responses, next_try)
+                    remaining -= 1
                 except Exception as e:
-                    # 失败时减半重试数量
-                    next_try = (next_try + 1) // 2
                     self.logger.warning(
-                        f"DeepSeek 请求出错: {e}，使用 {next_try} 个样本重试"
+                        f"DeepSeek 请求出错: {e}，稍后重试 (remaining={remaining})"
                     )
                     time.sleep(random.randint(1, 3))
                     total_num_attempts -= 1
@@ -136,12 +133,14 @@ class DeepSeek(AbstractLanguageModel):
         :return: DeepSeek 模型的响应
         :rtype: ChatCompletion
         """
+        # OpenAI-compatible 端点常见限制：n 仅支持 1；max_tokens 上限通常为 8192。
+        safe_max_tokens = min(int(self.max_tokens), 8192)
         response = self.client.chat.completions.create(
             model=self.model_id,
             messages=messages,
             temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            n=num_responses,
+            max_tokens=safe_max_tokens,
+            n=1,
             stop=self.stop,
         )
 
@@ -172,7 +171,8 @@ class DeepSeek(AbstractLanguageModel):
         :return: 响应文本列表
         :rtype: List[str]
         """
-        if not isinstance(query_response, List):
+        # typing.List is not valid for isinstance(); use built-in list.
+        if not isinstance(query_response, list):
             query_response = [query_response]
         return [
             choice.message.content

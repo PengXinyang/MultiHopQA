@@ -125,10 +125,15 @@ Hard constraints:
 - If you cannot identify the exact sentence index, use sent_idx = 0 (do NOT output null).
 - Prefer spans that DIRECTLY support answering the SubQuestion.
 - If the answer is not explicitly stated, still choose the single MOST RELEVANT document title as evidence (do not leave evidence_spans empty).
+- If <Bindings> is non-empty, you MUST prioritize evidence that mentions (or directly connects to) the bound entity/value(s).
 
 Return ONLY JSON in this exact format:
 {{"evidence_spans":[["title", sent_idx], ...], "evidence_summary":"one short evidence summary grounded in the cited span(s)"}}
 </Instruction>
+
+<Bindings>
+{bindings_text}
+</Bindings>
 
 <SubQuestion>
 {subquestion}
@@ -140,6 +145,9 @@ Return ONLY JSON in this exact format:
 
     ma_reasoner_prompt = """<Instruction>
 You are the Reasoner agent. Use only provided evidence summary to produce a partial answer.
+If <Bindings> is non-empty, your partial answer MUST be about the bound entity/value(s). If the evidence does not support that, output:
+Partial: NEED_RETRIEVE
+Confidence: 0.0
 Return exactly:
 Partial: <partial answer>
 Confidence: <0.0-1.0>
@@ -148,6 +156,10 @@ Confidence: <0.0-1.0>
 <Question>
 {question}
 </Question>
+
+<Bindings>
+{bindings_text}
+</Bindings>
 
 <SubQuestion>
 {subquestion}
@@ -164,6 +176,8 @@ If they are irrelevant, hallucinated, or logically wrong, you MUST output "Valid
 If they are helpful and correct, output "Validation: PASS".
 Return exactly:
 Critique: <short judgement>
+ReasonCode: <one of: wrong_entity, insufficient_evidence, not_grounded, other>
+SuggestedAction: <one of: backtrack_retrieve, backtrack_reason, accept>
 Validation: <PASS or REJECT>
 RefinedPartial: <better partial answer>
 Confidence: <0.0-1.0>
@@ -193,6 +207,11 @@ Hard constraints:
 - Do NOT introduce any new entity that does not appear in the provided partial answers or evidence summaries.
 - If multiple entities appear, choose only the entity that best answers the question.
 - Keep the answer minimal (entity/phrase), not a long explanation.
+- Temporal precision rule (IMPORTANT): if the question is asking "when"/a date/time AND the provided partials/evidence contain a more specific date than just a year, you MUST keep the finest supported granularity.
+  Examples:
+  - If you see "April 2012" anywhere relevant, do NOT answer only "2012"; answer "April 2012".
+  - If you see "7 January 2011", do NOT answer "2011"; answer "7 January 2011".
+  - Only output a bare year (e.g., "2012") if month/day are NOT present in the provided partials/evidence.
 </Instruction>
 
 <Question>
@@ -232,16 +251,27 @@ GlobalCritique: <one-sentence evaluation of final answer quality>
 
     def aggregation_prompt(self, state_dicts: List[Dict], **kwargs) -> str:
         if state_dicts and state_dicts[0].get("method", "").startswith("multiAgentGoT"):
+            # Sequential multi-hop stores hop traces in hop_history on the *current* state.
+            base = state_dicts[0]
+            hist = base.get("hop_history") or []
+            items = hist if isinstance(hist, list) and hist else state_dicts
+
             parts = []
-            for s in state_dicts:
-                subq = s.get("subquestion", "")
-                part = s.get("partial_answer") or s.get("current", "")
-                ev = s.get("evidence_summary", "")
+            for s in items:
+                if isinstance(s, dict) and "subquestion" in s and "partial_answer" in s:
+                    subq = s.get("subquestion", "")
+                    part = s.get("partial_answer") or ""
+                    ev = s.get("evidence_summary", "")
+                else:
+                    subq = s.get("subquestion", "") if isinstance(s, dict) else ""
+                    part = (s.get("partial_answer") or s.get("current", "")) if isinstance(s, dict) else ""
+                    ev = s.get("evidence_summary", "") if isinstance(s, dict) else ""
+
                 parts.append(f"- {subq}: {part}")
                 if ev:
                     parts.append(f"  Evidence: {ev}")
             return self.ma_aggregate_prompt.format(
-                question=state_dicts[0].get("question", ""),
+                question=base.get("question", ""),
                 partials_text="\n".join(parts),
             )
         assert len(state_dicts) == 2
@@ -299,15 +329,27 @@ GlobalCritique: <one-sentence evaluation of final answer quality>
                     max_subquestions=kwargs.get("max_subquestions", 4),
                 )
             if role == "retriever":
+                bindings = kwargs.get("bindings") or {}
+                if isinstance(bindings, dict) and bindings:
+                    bindings_text = "\n".join([f"{k} = {v}" for k, v in bindings.items()])
+                else:
+                    bindings_text = ""
                 return self.ma_retriever_prompt.format(
                     subquestion=kwargs.get("subquestion", ""),
                     context_text=context_text,
+                    bindings_text=bindings_text,
                 )
             if role == "reasoner":
+                bindings = kwargs.get("bindings") or {}
+                if isinstance(bindings, dict) and bindings:
+                    bindings_text = "\n".join([f"{k} = {v}" for k, v in bindings.items()])
+                else:
+                    bindings_text = ""
                 return self.ma_reasoner_prompt.format(
                     question=question,
                     subquestion=kwargs.get("subquestion", ""),
                     evidence_summary=kwargs.get("evidence_summary", ""),
+                    bindings_text=bindings_text,
                 )
             if role == "critic":
                 return self.ma_critic_prompt.format(

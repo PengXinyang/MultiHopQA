@@ -40,6 +40,7 @@ class OperationType(Enum):
     ground_truth_evaluator: int = 7  # 标准答案评估
     selector: int = 8  # 选择器
     critic_verify_and_backtrack: int = 9  # 带有回溯机制的评估器
+    advance_subquestion: int = 10  # multiAgentGoT: 推进到下一跳子问题
 
 class BacktrackSignal(Exception):
     """用于触发全局回溯的异常信号"""
@@ -868,6 +869,80 @@ class Selector(Operation):
         self.logger.info("Selector 操作 %d 选中了 %d 个思维", self.id, len(self.thoughts))
 
 
+class AdvanceSubquestion(Operation):
+    """
+    multiAgentGoT 专用：在同一个 Thought state 中推进到下一跳子问题。
+
+    - 把当前 hop 的 refined partial_answer 写入 bindings（如 "#1": "<answer>"）
+    - sub_id += 1，并切换 agent_role="retriever"、phase=1
+    - 清空本跳临时字段（evidence/partial/candidates 等）
+    """
+
+    operation_type: OperationType = OperationType.advance_subquestion
+
+    def __init__(self, max_hops: int) -> None:
+        super().__init__()
+        self.max_hops = max(1, int(max_hops))
+        self.thoughts: List[Thought] = []
+
+    def get_thoughts(self) -> List[Thought]:
+        return self.thoughts
+
+    @staticmethod
+    def _as_str(x) -> str:
+        return str(x).strip() if x is not None else ""
+
+    def _execute(
+        self, lm: AbstractLanguageModel, prompter: Prompter, parser: Parser, **kwargs
+    ) -> None:
+        previous_thoughts: List[Thought] = self.get_previous_thoughts()
+        if not previous_thoughts:
+            return
+
+        self.thoughts = []
+        for thought in previous_thoughts:
+            state = dict(thought.state) if isinstance(thought.state, dict) else {}
+            sub_id = int(state.get("sub_id", 0) or 0)
+            subquestions = state.get("subquestions") or []
+            if not isinstance(subquestions, list):
+                subquestions = []
+
+            # Record binding for current hop (1-indexed: #1 is hop0 answer).
+            ans = self._as_str(state.get("partial_answer") or state.get("current") or "")
+            if ans:
+                bindings = state.get("bindings") or {}
+                if not isinstance(bindings, dict):
+                    bindings = {}
+                bindings[f"#{sub_id + 1}"] = ans
+                state["bindings"] = bindings
+
+            next_sub_id = sub_id + 1
+            if next_sub_id >= min(self.max_hops, len(subquestions) or self.max_hops):
+                # No next hop; just carry state forward unchanged.
+                self.thoughts.append(Thought(state))
+                continue
+
+            state["sub_id"] = next_sub_id
+            state["subquestion"] = self._as_str(subquestions[next_sub_id]) if next_sub_id < len(subquestions) else ""
+            state["agent_role"] = "retriever"
+            state["phase"] = 1
+
+            # Reset per-hop fields
+            state["evidence_spans"] = []
+            state["evidence_summary"] = ""
+            state["pred_paragraph_support_idx"] = None
+            state["partial_answer"] = ""
+            state["current"] = ""
+            state["confidence"] = 0.0
+            state["candidate_answers"] = []
+            state.pop("critique", None)
+            state.pop("validation_decision", None)
+            state.pop("reason_code", None)
+            state.pop("suggested_action", None)
+
+            self.thoughts.append(Thought(state))
+
+
 class CriticVerifyAndBacktrack(Operation):
     """
     带有回溯机制的评估器操作：
@@ -929,12 +1004,17 @@ class CriticVerifyAndBacktrack(Operation):
             if parsed_state.get("validation_decision") == "REJECT":
                 if self.current_retries < self.max_retries:
                     self.current_retries += 1
+                    reason_code = parsed_state.get("reason_code") or ""
                     self.logger.warning(
-                        "Critic 拒绝了当前结果，触发第 %d 次回溯。原因: %s", 
+                        "Critic 拒绝了当前结果，触发第 %d 次回溯。原因: %s (reason_code=%s)",
                         self.current_retries, parsed_state.get("critique", "未知")
+                        , reason_code
                     )
                     # 抛出回溯信号，打回给目标节点
-                    raise BacktrackSignal(self.target_backtrack_op, reason="Critic判定信息不相关或错误")
+                    raise BacktrackSignal(
+                        self.target_backtrack_op,
+                        reason=f"Critic REJECT (reason_code={reason_code})",
+                    )
                 else:
                     self.logger.warning("达到最大重试次数 (%d)，强行通过。", self.max_retries)
             
