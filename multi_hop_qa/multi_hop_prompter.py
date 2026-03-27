@@ -126,10 +126,18 @@ Hard constraints:
 - Prefer spans that DIRECTLY support answering the SubQuestion.
 - If the answer is not explicitly stated, still choose the single MOST RELEVANT document title as evidence (do not leave evidence_spans empty).
 - If <Bindings> is non-empty, you MUST prioritize evidence that mentions (or directly connects to) the bound entity/value(s).
+- Temporal semantics hint (IMPORTANT):
+  - If the SubQuestion asks "When/What year/Date" about an EVENT (e.g., "impeached", "founded", "announced", "launched"),
+    prioritize evidence that states the EVENT OCCURRED/STARTED in a specific year/date (e.g., "in 1786", "on 7 January 2011").
+  - Do NOT prefer evidence that only gives the DURATION of a later process (e.g., "between 1788 and 1795") unless the question explicitly asks for a duration/range ("between/from-to/how long").
 
 Return ONLY JSON in this exact format:
 {{"evidence_spans":[["title", sent_idx], ...], "evidence_summary":"one short evidence summary grounded in the cited span(s)"}}
 </Instruction>
+
+<RetryFeedback>
+{retry_feedback_text}
+</RetryFeedback>
 
 <Bindings>
 {bindings_text}
@@ -148,6 +156,10 @@ You are the Reasoner agent. Use only provided evidence summary to produce a part
 If <Bindings> is non-empty, your partial answer MUST be about the bound entity/value(s). If the evidence does not support that, output:
 Partial: NEED_RETRIEVE
 Confidence: 0.0
+Grounding constraints (CRITICAL):
+- Do NOT speculate or add any detail not explicitly supported by <Evidence>.
+- Do NOT introduce new entities, dates, years, numbers, or ranges that do not appear in <Evidence>.
+- If <Evidence> mentions only a single year/date, do NOT invent an additional year/date.
 Return exactly:
 Partial: <partial answer>
 Confidence: <0.0-1.0>
@@ -156,6 +168,10 @@ Confidence: <0.0-1.0>
 <Question>
 {question}
 </Question>
+
+<RetryFeedback>
+{retry_feedback_text}
+</RetryFeedback>
 
 <Bindings>
 {bindings_text}
@@ -176,11 +192,24 @@ If they are irrelevant, hallucinated, or logically wrong, you MUST output "Valid
 If they are helpful and correct, output "Validation: PASS".
 Return exactly:
 Critique: <short judgement>
+TimeFacet: <one of: initiation | occurrence | trial_duration | duration | other>
 ReasonCode: <one of: wrong_entity, insufficient_evidence, not_grounded, other>
 SuggestedAction: <one of: backtrack_retrieve, backtrack_reason, accept>
 Validation: <PASS or REJECT>
 RefinedPartial: <better partial answer>
 Confidence: <0.0-1.0>
+
+Guidelines for TimeFacet:
+- Use "initiation" when the question asks when an action/event was initiated (e.g., "impeached", "charged", "founded").
+- Use "occurrence" when the question asks when something happened at a point in time (unveiled, released, born, died).
+- Use "trial_duration"/"duration" when the evidence/answer is a span/range (between X and Y, from X to Y, lasted N years).
+- If the question asks "When was X impeached?" and your evidence only provides a trial span like "between 1788 and 1795",
+  you MUST set TimeFacet=trial_duration and Validation=REJECT with SuggestedAction=backtrack_retrieve (need the initiation year).
+
+Grounding constraints (CRITICAL):
+- RefinedPartial MUST be fully supported by <Evidence>.
+- If PartialAnswer contains extra facts not in <Evidence>, remove them in RefinedPartial.
+- Do NOT add any new entities/dates/years/numbers that do not appear in <Evidence>.
 </Instruction>
 
 <Question>
@@ -212,6 +241,7 @@ Hard constraints:
   - If you see "April 2012" anywhere relevant, do NOT answer only "2012"; answer "April 2012".
   - If you see "7 January 2011", do NOT answer "2011"; answer "7 January 2011".
   - Only output a bare year (e.g., "2012") if month/day are NOT present in the provided partials/evidence.
+- Anti-hallucination rule (IMPORTANT): for numeric/time answers, output ONLY values that appear verbatim in the provided partials/evidence summaries.
 </Instruction>
 
 <Question>
@@ -334,10 +364,16 @@ GlobalCritique: <one-sentence evaluation of final answer quality>
                     bindings_text = "\n".join([f"{k} = {v}" for k, v in bindings.items()])
                 else:
                     bindings_text = ""
+                rf = kwargs.get("retry_feedback") or {}
+                if isinstance(rf, dict) and rf:
+                    retry_feedback_text = "\n".join([f"{k}: {v}" for k, v in rf.items() if v])
+                else:
+                    retry_feedback_text = ""
                 return self.ma_retriever_prompt.format(
                     subquestion=kwargs.get("subquestion", ""),
                     context_text=context_text,
                     bindings_text=bindings_text,
+                    retry_feedback_text=retry_feedback_text,
                 )
             if role == "reasoner":
                 bindings = kwargs.get("bindings") or {}
@@ -345,11 +381,17 @@ GlobalCritique: <one-sentence evaluation of final answer quality>
                     bindings_text = "\n".join([f"{k} = {v}" for k, v in bindings.items()])
                 else:
                     bindings_text = ""
+                rf = kwargs.get("retry_feedback") or {}
+                if isinstance(rf, dict) and rf:
+                    retry_feedback_text = "\n".join([f"{k}: {v}" for k, v in rf.items() if v])
+                else:
+                    retry_feedback_text = ""
                 return self.ma_reasoner_prompt.format(
                     question=question,
                     subquestion=kwargs.get("subquestion", ""),
                     evidence_summary=kwargs.get("evidence_summary", ""),
                     bindings_text=bindings_text,
+                    retry_feedback_text=retry_feedback_text,
                 )
             if role == "critic":
                 return self.ma_critic_prompt.format(

@@ -82,7 +82,12 @@ class Controller:
             
             try:
                 current_operation.execute(
-                    self.lm, self.prompter, self.parser, **self.problem_parameters
+                    # Pass a stable reference so operations can persist feedback across retries.
+                    self.lm,
+                    self.prompter,
+                    self.parser,
+                    __pp_ref=self.problem_parameters,
+                    **self.problem_parameters,
                 )
                 self.logger.info("操作 %s 执行完成", current_operation.operation_type)
                 

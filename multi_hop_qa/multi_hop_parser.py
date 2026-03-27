@@ -140,6 +140,43 @@ class MultiHopParser(parser.Parser):
         return text.split("\n")[0].strip() if text else ""
 
     @staticmethod
+    def _looks_like_range(text: str) -> bool:
+        t = (text or "").lower()
+        if re.search(r"\bbetween\s+\d{3,4}\s+and\s+\d{3,4}\b", t):
+            return True
+        if re.search(r"\bfrom\s+\d{3,4}\s+to\s+\d{3,4}\b", t):
+            return True
+        if re.search(r"\b\d{3,4}\s*-\s*\d{3,4}\b", t):
+            return True
+        return False
+
+    @staticmethod
+    def _is_duration_question(subq: str) -> bool:
+        s = (subq or "").lower()
+        return any(
+            k in s
+            for k in (
+                "between",
+                "from",
+                "to ",
+                "how long",
+                "duration",
+                "last",
+                "years",
+                "during which",
+                "range",
+            )
+        )
+
+    @staticmethod
+    def _is_impeach_initiation_question(subq: str) -> bool:
+        s = (subq or "").lower()
+        if "impeach" not in s and "impeached" not in s and "impeachment" not in s:
+            return False
+        # Not a duration/range question: user expects a point-in-time / initiation year.
+        return not MultiHopParser._is_duration_question(s)
+
+    @staticmethod
     def _extract_float_after(prefix: str, text: str, default: float = 0.0) -> float:
         for line in text.splitlines():
             if line.strip().lower().startswith(prefix.lower()):
@@ -297,10 +334,13 @@ class MultiHopParser(parser.Parser):
                     validation = "PASS"
                     reason_code = ""
                     suggested_action = ""
+                    time_facet = ""
                     for line in text.splitlines():
                         low = line.strip().lower()
                         if low.startswith("critique:"):
                             critique = line.split(":", 1)[1].strip()
+                        elif low.startswith("timefacet:"):
+                            time_facet = line.split(":", 1)[1].strip()
                         elif low.startswith("reasoncode:"):
                             reason_code = line.split(":", 1)[1].strip()
                         elif low.startswith("suggestedaction:"):
@@ -315,11 +355,27 @@ class MultiHopParser(parser.Parser):
                     new_state["critique"] = critique
                     new_state["partial_answer"] = refined
                     new_state["current"] = refined
+                    # Post-check: temporal facet mismatch for impeachment initiation questions.
+                    # If question expects initiation year but evidence/answer is a span, force REJECT + backtrack.
+                    subq = str(new_state.get("subquestion", ""))
+                    ev = str(new_state.get("evidence_summary", ""))
+                    if self._is_impeach_initiation_question(subq) and not self._is_duration_question(subq):
+                        if self._looks_like_range(refined) or self._looks_like_range(ev):
+                            validation = "REJECT"
+                            if not reason_code:
+                                reason_code = "insufficient_evidence"
+                            if not suggested_action:
+                                suggested_action = "backtrack_retrieve"
+                            if not time_facet:
+                                time_facet = "trial_duration"
+
                     new_state["validation_decision"] = validation
                     if reason_code:
                         new_state["reason_code"] = reason_code
                     if suggested_action:
                         new_state["suggested_action"] = suggested_action
+                    if time_facet:
+                        new_state["time_facet"] = time_facet
                     new_state["confidence"] = self._extract_float_after(
                         "Confidence", text, new_state.get("confidence", 0.5)
                     )
@@ -341,6 +397,7 @@ class MultiHopParser(parser.Parser):
                             "evidence_summary": str(new_state.get("evidence_summary", "")),
                             "validation_decision": str(new_state.get("validation_decision", "")),
                             "reason_code": str(new_state.get("reason_code", "")),
+                            "time_facet": str(new_state.get("time_facet", "")),
                         }
                     )
                     new_state["hop_history"] = hist

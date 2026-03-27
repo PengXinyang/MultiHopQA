@@ -450,6 +450,13 @@ class Generate(Operation):
         if len(previous_thoughts) == 0:
             previous_thoughts = [Thought(state=kwargs)]
 
+        pp_ref = kwargs.get("__pp_ref")
+        retry_by_hop = {}
+        if isinstance(pp_ref, dict):
+            retry_by_hop = pp_ref.get("retry_feedback_by_hop") or {}
+            if not isinstance(retry_by_hop, dict):
+                retry_by_hop = {}
+
         for thought in previous_thoughts:
             # base_state = dict(thought.state or {})
             # # 如果当前 Generate 节点带有 node_instruction（来自 AI GoO），
@@ -458,6 +465,20 @@ class Generate(Operation):
             # if node_instruction:
             #     base_state["node_instruction"] = node_instruction
             base_state = thought.state
+            # Inject persisted retry feedback into multiAgentGoT prompts (kept across backtracking).
+            try:
+                if (
+                    isinstance(base_state, dict)
+                    and str(base_state.get("method", "")).startswith("multiAgentGoT")
+                    and base_state.get("agent_role") in ("retriever", "reasoner")
+                ):
+                    sid = int(base_state.get("sub_id", -1) or -1)
+                    fb = retry_by_hop.get(str(sid)) or retry_by_hop.get(sid)
+                    if isinstance(fb, dict) and fb:
+                        # Do not overwrite any newer in-state feedback.
+                        base_state.setdefault("retry_feedback", fb)
+            except Exception:
+                pass
             if hasattr(lm, "set_role"):
                 lm.set_role(base_state.get("agent_role", "default"))
             prompt = prompter.generate_prompt(self.num_branches_prompt, **base_state)
@@ -952,17 +973,25 @@ class CriticVerifyAndBacktrack(Operation):
 
     operation_type: OperationType = OperationType.critic_verify_and_backtrack
 
-    def __init__(self, target_backtrack_op: Operation, max_retries: int = 3) -> None:
+    def __init__(
+        self,
+        target_backtrack_op: Operation,
+        max_retries: int = 3,
+        target_backtrack_reasoner_op: Operation | None = None,
+    ) -> None:
         """
         初始化 CriticVerifyAndBacktrack 操作。
 
         :param target_backtrack_op: 如果检验失败，要回溯到的目标操作（通常是该分支的 Retriever）
         :type target_backtrack_op: Operation
+        :param target_backtrack_reasoner_op: 如果“证据对但推理错”，可只回溯到 Reasoner（可选）
+        :type target_backtrack_reasoner_op: Operation | None
         :param max_retries: 最大允许的回溯重试次数
         :type max_retries: int
         """
         super().__init__()
         self.target_backtrack_op: Operation = target_backtrack_op
+        self.target_backtrack_reasoner_op: Operation | None = target_backtrack_reasoner_op
         self.max_retries: int = max_retries
         self.current_retries: int = 0
         self.thoughts: List[Thought] = []
@@ -1005,18 +1034,62 @@ class CriticVerifyAndBacktrack(Operation):
                 if self.current_retries < self.max_retries:
                     self.current_retries += 1
                     reason_code = parsed_state.get("reason_code") or ""
+                    time_facet = parsed_state.get("time_facet") or ""
+                    suggested = (parsed_state.get("suggested_action") or "").strip().lower()
+                    # Persist feedback for this hop across retries via controller's problem_parameters reference.
+                    pp_ref = kwargs.get("__pp_ref")
+                    if isinstance(pp_ref, dict):
+                        fb_by_hop = pp_ref.get("retry_feedback_by_hop")
+                        if not isinstance(fb_by_hop, dict):
+                            fb_by_hop = {}
+                            pp_ref["retry_feedback_by_hop"] = fb_by_hop
+                        hop_key = parsed_state.get("sub_id", base_state.get("sub_id"))
+                        try:
+                            hop_key_int = int(hop_key)
+                            hop_key_str = str(hop_key_int)
+                        except Exception:
+                            hop_key_int = None
+                            hop_key_str = str(hop_key)
+                        fb_by_hop[hop_key_str] = {
+                            "critique": parsed_state.get("critique", ""),
+                            "reason_code": reason_code,
+                            "time_facet": time_facet,
+                            "suggested_action": suggested,
+                            "previous_partial_answer": base_state.get("partial_answer", ""),
+                            "previous_evidence_summary": base_state.get("evidence_summary", ""),
+                            "subquestion": base_state.get("subquestion", ""),
+                        }
                     self.logger.warning(
                         "Critic 拒绝了当前结果，触发第 %d 次回溯。原因: %s (reason_code=%s)",
                         self.current_retries, parsed_state.get("critique", "未知")
                         , reason_code
                     )
+                    target = self.target_backtrack_op
+                    # If evidence looks OK but reasoning is wrong, only backtrack to reasoner if provided.
+                    if suggested == "backtrack_reason" and self.target_backtrack_reasoner_op is not None:
+                        target = self.target_backtrack_reasoner_op
                     # 抛出回溯信号，打回给目标节点
                     raise BacktrackSignal(
-                        self.target_backtrack_op,
-                        reason=f"Critic REJECT (reason_code={reason_code})",
+                        target,
+                        reason=(
+                            f"Critic REJECT (reason_code={reason_code}, time_facet={time_facet}, "
+                            f"suggested_action={suggested})"
+                        ),
                     )
                 else:
                     self.logger.warning("达到最大重试次数 (%d)，强行通过。", self.max_retries)
+            else:
+                # On PASS, clear persisted feedback for this hop to avoid contaminating later steps.
+                pp_ref = kwargs.get("__pp_ref")
+                if isinstance(pp_ref, dict):
+                    fb_by_hop = pp_ref.get("retry_feedback_by_hop")
+                    if isinstance(fb_by_hop, dict):
+                        hop_key = parsed_state.get("sub_id", base_state.get("sub_id"))
+                        try:
+                            hop_key_str = str(int(hop_key))
+                        except Exception:
+                            hop_key_str = str(hop_key)
+                        fb_by_hop.pop(hop_key_str, None)
             
             # 如果 PASS 或达到最大重试次数，则保留该思维
             new_state = {**base_state, **parsed_state}

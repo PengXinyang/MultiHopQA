@@ -114,7 +114,9 @@ def multiAgentGoT(num_branches: int = 4, local_branch_k: int = 2) -> operations.
 
         # Critic w/ backtrack to this hop's retriever
         critic_verify = operations.CriticVerifyAndBacktrack(
-            target_backtrack_op=retriever, max_retries=2
+            target_backtrack_op=retriever,
+            target_backtrack_reasoner_op=reasoner,
+            max_retries=2,
         )
         critic_verify.add_predecessor(reasoner_best)
         g.add_operation(critic_verify)
