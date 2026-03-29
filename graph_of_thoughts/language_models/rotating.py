@@ -157,8 +157,10 @@ class LightweightModelGroup(RotatingLanguageModel):
         #"chatgpt",  # gpt-3.5-turbo
         #"deepseek-v3",
         "gemini-2.5-flash-gcli"
-        "gemini-2.5-flash",
-        "gemini-3-flash-preview",
+        "gemini-2.5-flash-1",
+        "gemini-2.5-flash-2",
+        "gemini-3-flash-1",
+        "gemini-3-flash-2",
     ]
 
     def __init__(self, config_path: str, cache: bool = True, retries_per_model: int = 3) -> None:
@@ -193,8 +195,10 @@ class HeavyModelGroup(RotatingLanguageModel):
                 #"deepseek-r1",
                 "gemini-2.5-pro-gcli",
                 "gemini-3-pro-gcli",
-                "gemini-2.5-pro",
-                "gemini-3-pro",
+                "gemini-2.5-pro-1",
+                "gemini-2.5-pro-2",
+                "gemini-3-pro-1",
+                "gemini-3-pro-2",
             ]
         super().__init__(
             config_path=config_path,
