@@ -29,6 +29,8 @@ class Gemini(AbstractLanguageModel):
         config_path: str = "",
         model_name: str = "gemini-2.5-flash",
         cache: bool = False,
+        *,
+        ignore_env_api_key: bool = False,
     ) -> None:
         """
         初始化 Gemini 实例。
@@ -39,6 +41,8 @@ class Gemini(AbstractLanguageModel):
         :type model_name: str
         :param cache: 是否缓存响应，默认为 False
         :type cache: bool
+        :param ignore_env_api_key: 为 True 时仅用配置文件 api_key（多组 key 并行时避免环境变量覆盖）
+        :type ignore_env_api_key: bool
         """
         super().__init__(config_path, model_name, cache)
 
@@ -58,8 +62,11 @@ class Gemini(AbstractLanguageModel):
         if self.organization == "":
             self.logger.warning("Gemini organization 配置为空（通常无影响）")
 
-        # API Key：优先从环境变量获取，否则从配置文件获取
-        self.api_key: str = os.getenv("GEMINI_API_KEY", self.config.get("api_key", ""))
+        # API Key：默认同环境变量；ignore_env_api_key 时仅用配置（多进程多 key 分组）
+        if ignore_env_api_key:
+            self.api_key = str(self.config.get("api_key", "") or "")
+        else:
+            self.api_key = os.getenv("GEMINI_API_KEY", self.config.get("api_key", ""))
         if self.api_key == "":
             raise ValueError(
                 "GEMINI_API_KEY 未设置，且配置文件中未提供 api_key"

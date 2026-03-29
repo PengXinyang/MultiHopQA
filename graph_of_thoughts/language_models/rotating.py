@@ -24,6 +24,7 @@ class RotatingModelConfig:
     model_names: List[str]
     retries_per_model: int = 3
     cache: bool = True
+    gemini_parallel_group_0based: Optional[int] = None
 
 
 class RotatingLanguageModel:
@@ -44,12 +45,20 @@ class RotatingLanguageModel:
 
         self.retries_per_model = int(config.retries_per_model or 3)
         self.cache = bool(config.cache)
+        self._gemini_parallel_group_0based: Optional[int] = config.gemini_parallel_group_0based
 
         self._models: List[Any] = []
         kept_names: List[str] = []
         for name in self.model_names:
             try:
-                self._models.append(build_language_model(config_path, model_name=name, cache=self.cache))
+                self._models.append(
+                    build_language_model(
+                        config_path,
+                        model_name=name,
+                        cache=self.cache,
+                        gemini_parallel_group_0based=self._gemini_parallel_group_0based,
+                    )
+                )
                 kept_names.append(name)
             except Exception as e:
                 # If a model cannot be constructed (missing key/env/dependency), skip it.
@@ -163,13 +172,31 @@ class LightweightModelGroup(RotatingLanguageModel):
         "gemini-3-flash-2",
     ]
 
-    def __init__(self, config_path: str, cache: bool = True, retries_per_model: int = 3) -> None:
+    #: 并行且按进程分配 Gemini key 组时：每角色内为逻辑名，组内先 2.5-flash 再 3-flash，组间由 GeminiGroupedFailover 切换
+    LITE_MODELS_PARALLEL: List[str] = [
+        "gemini-2.5-flash",
+        "gemini-3-flash",
+    ]
+
+    def __init__(
+        self,
+        config_path: str,
+        cache: bool = True,
+        retries_per_model: int = 3,
+        gemini_parallel_group_0based: Optional[int] = None,
+    ) -> None:
+        names = (
+            list(self.LITE_MODELS_PARALLEL)
+            if gemini_parallel_group_0based is not None
+            else list(self.LITE_MODELS)
+        )
         super().__init__(
             config_path=config_path,
             config=RotatingModelConfig(
-                model_names=self.LITE_MODELS,
+                model_names=names,
                 retries_per_model=retries_per_model,
                 cache=cache,
+                gemini_parallel_group_0based=gemini_parallel_group_0based,
             ),
         )
 
@@ -182,30 +209,40 @@ class HeavyModelGroup(RotatingLanguageModel):
     You can also pass an explicit model list.
     """
 
+    HEAVY_MODELS_PARALLEL: List[str] = [
+        "gemini-2.5-pro",
+        "gemini-3-pro",
+    ]
+
     def __init__(
         self,
         config_path: str,
         cache: bool = True,
         retries_per_model: int = 3,
         model_names: Optional[Sequence[str]] = None,
+        gemini_parallel_group_0based: Optional[int] = None,
     ) -> None:
         if model_names is None:
-            model_names = [
-                #"chatgpt4",
-                #"deepseek-r1",
-                #"gemini-2.5-pro-gcli",
-                #"gemini-3-pro-gcli",
-                "gemini-2.5-pro-1",
-                "gemini-2.5-pro-2",
-                "gemini-3-pro-1",
-                "gemini-3-pro-2",
-            ]
+            if gemini_parallel_group_0based is not None:
+                model_names = list(self.HEAVY_MODELS_PARALLEL)
+            else:
+                model_names = [
+                    #"chatgpt4",
+                    #"deepseek-r1",
+                    #"gemini-2.5-pro-gcli",
+                    #"gemini-3-pro-gcli",
+                    "gemini-2.5-pro-1",
+                    "gemini-2.5-pro-2",
+                    "gemini-3-pro-1",
+                    "gemini-3-pro-2",
+                ]
         super().__init__(
             config_path=config_path,
             config=RotatingModelConfig(
                 model_names=list(model_names),
                 retries_per_model=retries_per_model,
                 cache=cache,
+                gemini_parallel_group_0based=gemini_parallel_group_0based,
             ),
         )
 

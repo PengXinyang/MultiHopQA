@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from graph_of_thoughts.language_models import ChatGPT, DeepSeek, Gemini
 
 
@@ -11,6 +13,8 @@ def build_language_model(
         config_path: str,
         model_name: str,
         cache: bool = True,
+        *,
+        gemini_parallel_group_0based: Optional[int] = None,
 ):
     """
     根据模型名自动匹配并实例化语言模型类。
@@ -28,6 +32,8 @@ def build_language_model(
     :type model_name: str
     :param cache: 是否缓存响应，默认为 True
     :type cache: bool
+    :param gemini_parallel_group_0based: 非 None 时原生 Gemini 使用多组 api_key（config 中 …-1/…-2），优先该组并在失败时切换
+    :type gemini_parallel_group_0based: Optional[int]
     :return: 语言模型实例
     :rtype: AbstractLanguageModel
     """
@@ -45,7 +51,17 @@ def build_language_model(
         )
     
     if lower.startswith("gemini-"):
-        # print("使用 Gemini 原生模型")
+        if gemini_parallel_group_0based is not None:
+            from graph_of_thoughts.language_models.gemini_grouped_failover import (
+                GeminiGroupedFailover,
+            )
+
+            return GeminiGroupedFailover(
+                config_path,
+                logical_model_name=normalized,
+                preferred_group_0based=int(gemini_parallel_group_0based),
+                cache=cache,
+            )
         return Gemini(
             config_path,
             model_name=normalized,

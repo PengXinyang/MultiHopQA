@@ -4,6 +4,7 @@ import argparse
 import copy
 import logging
 import math
+import multiprocessing as mp
 import os
 import random
 import sys
@@ -14,6 +15,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 import utils
 from graph_of_thoughts import language_models, operations
+from graph_of_thoughts.language_models.gemini_grouped_failover import (
+    detect_gemini_parallel_num_groups,
+    parallel_gemini_groups_enabled,
+)
 from graph_of_thoughts.visualization import EventStore, start_realtime_server
 from multi_hop_graphs import io, cot, tot, got, multiAgentGoT
 from multi_hop_parser import MultiHopParser
@@ -27,6 +32,25 @@ _MAGOT_DEFAULTS: Dict[str, int] = {
     "got_critic_retries": 3,
 }
 
+# 仅并行池 initializer 在子进程中递增；主进程保持 None
+_PARALLEL_GEMINI_SLOT_RAW: Optional[int] = None
+
+
+def _pool_init_gemini_slot(counter) -> None:
+    global _PARALLEL_GEMINI_SLOT_RAW
+    with counter.get_lock():
+        s = int(counter.value)
+        counter.value = s + 1
+    _PARALLEL_GEMINI_SLOT_RAW = s
+
+
+def _effective_gemini_parallel_group(config_lm_path: str) -> Optional[int]:
+    """子进程内：worker 序号对组数取模，得到 0..num_groups-1。"""
+    if _PARALLEL_GEMINI_SLOT_RAW is None:
+        return None
+    n = detect_gemini_parallel_num_groups(config_lm_path)
+    return int(_PARALLEL_GEMINI_SLOT_RAW) % max(1, n)
+
 
 def _make_lm_for_method(
     method: Callable[..., operations.GraphOfOperations],
@@ -34,37 +58,52 @@ def _make_lm_for_method(
     config_lm_path: str,
 ) -> Any:
     """按方法类型构造 LM：multiAgentGoT* 用多角色 RoleAwareLM，其余用 default 单模型。"""
+    gp = _effective_gemini_parallel_group(config_lm_path)
     if method.__name__.startswith("multiAgentGoT"):
         role_to_lm = {}
         for role, model_name in role_model_names.items():
             if model_name == "__lite__":
                 role_to_lm[role] = language_models.LightweightModelGroup(
-                    config_lm_path, cache=True, retries_per_model=3
+                    config_lm_path,
+                    cache=True,
+                    retries_per_model=3,
+                    gemini_parallel_group_0based=gp,
                 )
             elif model_name == "__heavy__":
                 role_to_lm[role] = language_models.HeavyModelGroup(
-                    config_lm_path, cache=True, retries_per_model=3
+                    config_lm_path,
+                    cache=True,
+                    retries_per_model=3,
+                    gemini_parallel_group_0based=gp,
                 )
             else:
                 role_to_lm[role] = language_models.build_language_model(
                     config_lm_path,
                     model_name=model_name,
                     cache=True,
+                    gemini_parallel_group_0based=gp,
                 )
         return RoleAwareLM(role_to_lm=role_to_lm, default_role="default")
     model_name = role_model_names["default"]
     if model_name == "__lite__":
         return language_models.LightweightModelGroup(
-            config_lm_path, cache=True, retries_per_model=3
+            config_lm_path,
+            cache=True,
+            retries_per_model=3,
+            gemini_parallel_group_0based=gp,
         )
     if model_name == "__heavy__":
         return language_models.HeavyModelGroup(
-            config_lm_path, cache=True, retries_per_model=3
+            config_lm_path,
+            cache=True,
+            retries_per_model=3,
+            gemini_parallel_group_0based=gp,
         )
     return language_models.build_language_model(
         config_lm_path,
         model_name=model_name,
         cache=True,
+        gemini_parallel_group_0based=gp,
     )
 
 
@@ -272,7 +311,13 @@ def run(
 
         total = len(tasks)
         done = 0
-        with ProcessPoolExecutor(max_workers=pw) as ex:
+        use_pool_gemini = parallel_gemini_groups_enabled(config_lm_path)
+        ctx = mp.get_context("spawn")
+        pool_kw: Dict[str, Any] = {"max_workers": pw, "mp_context": ctx}
+        if use_pool_gemini:
+            pool_kw["initializer"] = _pool_init_gemini_slot
+            pool_kw["initargs"] = (ctx.Value("i", 0),)
+        with ProcessPoolExecutor(**pool_kw) as ex:
             futures = {ex.submit(_multi_hop_pool_worker, t): t for t in tasks}
             for fut in as_completed(futures):
                 done += 1
@@ -291,6 +336,13 @@ def run(
                     print(f"  [并行 {done}/{total}] 失败 _id={sid} err={res.get('error', '')[:200]}")
                 if math.isfinite(budget) and budget <= 0:
                     logging.error("预算耗尽；已提交的任务仍会由子进程跑完，请提高 budget 或减少样本。")
+                n_chk = int(utils.DATASET_AGGREGATE_CHECKPOINT_EVERY)
+                if n_chk > 0 and done % n_chk == 0:
+                    utils.finalize_run_aggregate(
+                        run_dir,
+                        progress_completed_n=done,
+                        print_table=False,
+                    )
         utils.finalize_run_aggregate(run_dir)
         return spent
 
@@ -328,6 +380,14 @@ def run(
 
             budget -= cost
             spent += cost
+
+        n_chk = int(utils.DATASET_AGGREGATE_CHECKPOINT_EVERY)
+        if n_chk > 0 and idx % n_chk == 0:
+            utils.finalize_run_aggregate(
+                run_dir,
+                progress_completed_n=idx,
+                print_table=False,
+            )
 
     utils.finalize_run_aggregate(run_dir)
     return spent
@@ -436,7 +496,7 @@ if __name__ == "__main__":
     else:
         samples = list(range(len_data))
 
-    approaches = [multiAgentGoT]
+    approaches = [cot, tot, got, multiAgentGoT]
 
     # 角色模型分配（方案A：一个角色一个智能体/模型实例）
     # 角色模型分配

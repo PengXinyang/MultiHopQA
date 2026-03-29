@@ -617,19 +617,41 @@ def print_aggregate_report_table(agg: Dict[str, Any]) -> None:
     print()
 
 
-def finalize_run_aggregate(run_dir: str) -> Optional[Dict[str, Any]]:
-    """
-    写入汇总 JSON 并打印表格。
+# 每完成若干道题写入一次进度汇总表（与全量总表格式一致，文件名带 progress_nXXX）
+DATASET_AGGREGATE_CHECKPOINT_EVERY = 10
 
-    - ``dataset_aggregate_metrics.json``：完整指标 + ``tables``（与终端表一致的行数组）+ ``generated_at``
-    - ``dataset_aggregate_table.json``：仅 ``run_dir`` / ``generated_at`` / ``note_zh`` / ``tables``，便于分享或绘图
+
+def finalize_run_aggregate(
+    run_dir: str,
+    *,
+    progress_completed_n: Optional[int] = None,
+    print_table: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """
+    写入汇总 JSON 并可选打印表格。
+
+    - 全量（``progress_completed_n`` 为 None）：``dataset_aggregate_metrics.json``、
+      ``dataset_aggregate_table.json``（跑完后的总表）。
+    - 进度（``progress_completed_n`` 为当前已累计完成的题目数，如 10）：
+      ``dataset_aggregate_metrics_progress_n010.json``、
+      ``dataset_aggregate_table_progress_n010.json``，
+      统计的是此时 run_dir 下已存在的 ``*.summary.json``（部分题目）。
     """
     try:
         agg = aggregate_run_summaries(run_dir)
         agg["generated_at"] = datetime.datetime.now().replace(microsecond=0).isoformat()
         agg["tables"] = build_aggregate_tables_json(agg.get("methods") or {})
 
-        out_path = os.path.join(run_dir, "dataset_aggregate_metrics.json")
+        if progress_completed_n is not None:
+            agg["checkpoint_completed_samples"] = int(progress_completed_n)
+            suffix = f"_progress_n{int(progress_completed_n):03d}"
+            metrics_name = f"dataset_aggregate_metrics{suffix}.json"
+            table_name = f"dataset_aggregate_table{suffix}.json"
+        else:
+            metrics_name = "dataset_aggregate_metrics.json"
+            table_name = "dataset_aggregate_table.json"
+
+        out_path = os.path.join(run_dir, metrics_name)
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(agg, f, ensure_ascii=False, indent=2)
 
@@ -639,12 +661,23 @@ def finalize_run_aggregate(run_dir: str) -> Optional[Dict[str, Any]]:
             "note_zh": agg.get("note_zh"),
             "tables": agg.get("tables"),
         }
-        table_path = os.path.join(run_dir, "dataset_aggregate_table.json")
+        if progress_completed_n is not None:
+            table_only["checkpoint_completed_samples"] = int(progress_completed_n)
+        table_path = os.path.join(run_dir, table_name)
         with open(table_path, "w", encoding="utf-8") as f:
             json.dump(table_only, f, ensure_ascii=False, indent=2)
 
-        print_aggregate_report_table(agg)
-        logging.info("数据集汇总已写入: %s 与 %s", out_path, table_path)
+        if print_table:
+            print_aggregate_report_table(agg)
+        if progress_completed_n is not None:
+            logging.info(
+                "进度汇总（已完成 %s 题）已写入: %s 与 %s",
+                progress_completed_n,
+                out_path,
+                table_path,
+            )
+        else:
+            logging.info("数据集汇总已写入: %s 与 %s", out_path, table_path)
         return agg
     except Exception as e:
         logging.warning("数据集汇总失败: %s", e, exc_info=True)
