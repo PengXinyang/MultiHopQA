@@ -3,6 +3,7 @@
 import argparse
 import copy
 import logging
+import math
 import os
 import random
 import sys
@@ -177,7 +178,7 @@ def run(
     Args:
         data_ids: 要运行的样本索引列表，None 或空列表表示全部
         methods: 方法列表，每个方法返回一个 GraphOfOperations
-        budget: 预算（美元），超出后停止
+        budget: 预算（美元）；非有限正数表示无上限；有限正数时串行模式下用尽则停止后续题
         role_model_names: 语言模型名称
         dataset: 运行哪个数据集
         data_path: 数据集路径，None 则使用默认 HotpotQA
@@ -205,6 +206,9 @@ def run(
         data_ids = list(range(len(data)))
     selected = [data[i] for i in data_ids if i < len(data)]
 
+    if not math.isfinite(budget) or budget < 0:
+        budget = float("inf")
+
     pw = max(1, int(parallel_workers or 1))
     parallel_method_tags: Optional[List[str]] = None
     if pw > 1:
@@ -221,7 +225,8 @@ def run(
     config_extra: Dict[str, Any] = {
         "data_path": data_path,
         "data_ids": data_ids[:len(selected)],
-        "budget": budget,
+        "budget": budget if math.isfinite(budget) else None,
+        "budget_unlimited": not math.isfinite(budget),
         "max_samples": max_samples,
         "parallel_workers": pw,
     }
@@ -284,20 +289,20 @@ def run(
                     )
                 else:
                     print(f"  [并行 {done}/{total}] 失败 _id={sid} err={res.get('error', '')[:200]}")
-                if budget <= 0:
+                if math.isfinite(budget) and budget <= 0:
                     logging.error("预算耗尽；已提交的任务仍会由子进程跑完，请提高 budget 或减少样本。")
         utils.finalize_run_aggregate(run_dir)
         return spent
 
     for idx, item in enumerate(selected, start=1):
         print(f"正在运行第 {idx}/{len(selected)} 个问题，_id={item.get('_id', '')}")
-        if budget <= 0:
+        if math.isfinite(budget) and budget <= 0:
             logging.error("Budget depleted, stopping.")
             break
 
         for method in methods:
             print(f"  方法: {method.__name__}")
-            if budget <= 0:
+            if math.isfinite(budget) and budget <= 0:
                 break
 
             lm = _make_lm_for_method(method, role_model_names, config_lm_path)
@@ -335,8 +340,12 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default="hotpotqa",
                         choices=["hotpotqa", "musique_ans", "musique_full"],
                         help="数据集名称")
-    parser.add_argument("--budget", type=float, default=5.0,
-                        help="预算（美元）")
+    parser.add_argument(
+        "--budget",
+        type=float,
+        default=float("inf"),
+        help="预算上限（美元）；默认无上限。设为有限正数时，串行模式用尽后不再跑后续样本；并行模式仅记录日志。负数或非数视为无上限",
+    )
     parser.add_argument(
         "--num_samples",
         type=int,
@@ -451,7 +460,9 @@ if __name__ == "__main__":
     else:
         print(f"抽样: 全量 {len(samples)} 题")
     print(f"样本数: {len(samples)}")
-    print(f"预算: ${args.budget}")
+    print(
+        f"预算: {'无上限' if not math.isfinite(args.budget) or args.budget < 0 else f'${args.budget}'}"
+    )
     print(f"并行进程数: {max(1, args.workers)}")
 
     vis_store = None
@@ -463,10 +474,11 @@ if __name__ == "__main__":
     elif args.realtime_vis and args.workers > 1:
         print("已跳过 realtime_vis（与 --workers>1 不兼容）")
 
+    _bud = args.budget
     spent = run(
         samples,
         approaches,
-        args.budget,
+        _bud,
         role_model_names,
         args.dataset,
         data_path=data_path,
@@ -474,4 +486,7 @@ if __name__ == "__main__":
         vis_store=vis_store,
         parallel_workers=max(1, args.workers),
     )
-    logging.info("Spent %s out of %s budget.", spent, args.budget)
+    if math.isfinite(_bud) and _bud >= 0:
+        logging.info("Spent %s out of %s budget.", spent, _bud)
+    else:
+        logging.info("Spent %s (无预算上限).", spent)
