@@ -333,10 +333,48 @@ def getLmConfigPath(base_dir: str = None) -> str:
     return os.path.abspath(config_path)
 
 
+def _collectLmUsage(lm: Any) -> Dict[str, Any]:
+    """
+    汇总单次推理的 token 与费用。
+
+    单价来自各底层模型构造时加载的 config.json：
+    prompt_token_cost / response_token_cost 表示每 1000 token 的美元计价；
+    费用在 ChatGPT / Gemini / DeepSeek 等实现里按累计 token 实时更新（与本函数读取的 cost 一致）。
+    """
+    prompt_tokens = int(getattr(lm, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(lm, "completion_tokens", 0) or 0)
+    cost = float(getattr(lm, "cost", 0.0) or 0.0)
+    usage: Dict[str, Any] = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        "estimated_cost_usd": round(cost, 8),
+        "pricing_note": (
+            "estimated_cost_usd 由各模型实现按 config.json 中每 1000 token 的 "
+            "prompt_token_cost、response_token_cost 对累计 prompt/completion tokens 计算并求和；"
+            "多角色时顶层为全部角色实例之和。"
+        ),
+    }
+    role_map = getattr(lm, "role_to_lm", None)
+    if isinstance(role_map, dict) and role_map:
+        by_role: Dict[str, Any] = {}
+        for role, sub_lm in role_map.items():
+            pt = int(getattr(sub_lm, "prompt_tokens", 0) or 0)
+            ct = int(getattr(sub_lm, "completion_tokens", 0) or 0)
+            by_role[role] = {
+                "prompt_tokens": pt,
+                "completion_tokens": ct,
+                "total_tokens": pt + ct,
+                "estimated_cost_usd": round(float(getattr(sub_lm, "cost", 0.0) or 0.0), 8),
+            }
+        usage["by_role"] = by_role
+    return usage
+
+
 def _buildCompactResultSummary(executor: Any, item: Dict, method_name: str) -> Dict:
     """
     从执行器中提取关键结果，生成精简版结果字典。
-    包含：EM、F1、score、是否解决、AI评价、标准答案、预测答案等。
+    包含：EM、F1、score、是否解决、AI评价、标准答案、预测答案、usage（token 与费用）等。
     """
     final_state = {}
     final_score = None
@@ -379,4 +417,14 @@ def _buildCompactResultSummary(executor: Any, item: Dict, method_name: str) -> D
         "problem_solved": bool(solved),
         "ai_evaluation": ai_eval,
     }
+    lm = getattr(executor, "lm", None)
+    if lm is not None:
+        try:
+            summary["usage"] = _collectLmUsage(lm)
+        except Exception as e:
+            logging.warning("Failed to collect LM usage for summary: %s", e)
+            summary["usage"] = {
+                "error": str(e),
+                "pricing_note": "未能读取 token/费用，请检查语言模型是否实现 prompt_tokens、completion_tokens、cost。",
+            }
     return summary

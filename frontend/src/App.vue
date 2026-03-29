@@ -8,15 +8,23 @@
       <span>ID</span>
       <input v-model="sampleId" style="width: 320px" />
       <button @click="connect">连接</button>
+      <button type="button" @click="fitViewToNodes">居中显示全图</button>
       <span class="badge">{{ status }}</span>
+      <span class="muted" style="font-size: 12px; margin-left: 8px">
+        在空白处拖拽平移；节点多时请点「居中」或向右拖看后续 hop
+      </span>
     </div>
 
     <div class="layout">
       <div class="canvas" ref="canvasEl" :class="{ dragging: isDragging }">
+        <div
+          class="canvas-pan"
+          :style="{ transform: `translate(${panX}px, ${panY}px)` }"
+        >
         <svg
           :width="svgW"
           :height="svgH"
-          style="display: block; min-width: 1200px; min-height: 700px"
+          style="display: block"
         >
           <defs>
             <marker
@@ -86,6 +94,7 @@
             </text>
           </g>
         </svg>
+        </div>
       </div>
 
       <div class="panel">
@@ -113,7 +122,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref, computed, watch } from "vue";
+import { onMounted, ref, computed, watch, nextTick } from "vue";
 import { fetchEvents, fetchRuns } from "./api";
 
 const methodTitles = ["IO", "COT", "TOT", "GOT", "multiAgentGoT"];
@@ -142,9 +151,25 @@ const edges = ref([]);
 const selected = ref(null);
 const canvasEl = ref(null);
 const isDragging = ref(false);
+/** 画布平移（无滚动条，仅拖拽） */
+const panX = ref(0);
+const panY = ref(0);
 
-const svgW = computed(() => 1600 + opColumn.size * 200);
-const svgH = computed(() => Math.max(900, 600 + nodes.value.length * 6));
+/** 按节点实际坐标包络计算，避免纵向/横向堆叠超出固定高度后被裁切（看不到后续 hop） */
+const svgW = computed(() => {
+  const pad = nodeR + 48;
+  const list = nodes.value;
+  if (!list.length) return 1400;
+  const maxX = Math.max(...list.map((n) => n.x));
+  return Math.max(1200, Math.ceil(maxX + pad));
+});
+const svgH = computed(() => {
+  const pad = nodeR + 48;
+  const list = nodes.value;
+  if (!list.length) return 800;
+  const maxY = Math.max(...list.map((n) => n.y));
+  return Math.max(700, Math.ceil(maxY + pad));
+});
 
 function titleToMethodName(t) {
   const s = String(t || "").trim().toLowerCase();
@@ -201,10 +226,35 @@ function resetGraph() {
   nodes.value = [];
   edges.value = [];
   selected.value = null;
+  panX.value = 0;
+  panY.value = 0;
 }
 
 function selectNode(n) {
   selected.value = n;
+}
+
+/** 将图心移到画布中心，便于看到右侧后续 hop 或纵向堆叠的节点 */
+function fitViewToNodes() {
+  const list = nodes.value;
+  if (!list.length) return;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const n of list) {
+    minX = Math.min(minX, n.x - nodeR - 12);
+    maxX = Math.max(maxX, n.x + nodeR + 12);
+    minY = Math.min(minY, n.y - nodeR - 12);
+    maxY = Math.max(maxY, n.y + nodeR + 12);
+  }
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const el = canvasEl.value;
+  const cw = el ? el.clientWidth : 800;
+  const ch = el ? el.clientHeight : 600;
+  panX.value = Math.round(cw / 2 - cx);
+  panY.value = Math.round(ch / 2 - cy);
 }
 
 function edgePath(e) {
@@ -277,7 +327,10 @@ function handleEvent(payload) {
   if (payload.type === "thought_created") {
     ensureNode(payload.node, payload.op_id, payload.op_type, payload.parent_ids || []);
   }
-  if (payload.type === "run_end") status.value = "运行结束";
+  if (payload.type === "run_end") {
+    status.value = "运行结束";
+    nextTick(() => fitViewToNodes());
+  }
 }
 
 async function poll() {
@@ -335,55 +388,33 @@ watch(methodTitle, async () => {
 
 onMounted(() => {
   initDefault();
-  setupCanvasPanAndScroll();
+  setupCanvasDragPan();
 });
 
-function setupCanvasPanAndScroll() {
+function setupCanvasDragPan() {
   const el = canvasEl.value;
   if (!el) return;
 
-  // 1) Wheel: default to horizontal scroll for long graphs.
-  el.addEventListener(
-    "wheel",
-    (e) => {
-      // If user is zooming page (Ctrl+wheel), don't hijack.
-      if (e.ctrlKey) return;
-      // Prefer horizontal movement when holding Shift, otherwise map deltaY -> scrollLeft.
-      const dx = e.shiftKey ? e.deltaY : e.deltaY;
-      if (Math.abs(dx) > 0) {
-        el.scrollLeft += dx;
-        // keep vertical wheel available when user intentionally scrolls vertically with Alt.
-        if (!e.altKey) e.preventDefault();
-      }
-    },
-    { passive: false },
-  );
-
-  // 2) Drag-to-pan: drag empty area to scroll both axes.
   let startX = 0;
   let startY = 0;
-  let startLeft = 0;
-  let startTop = 0;
+  let startPanX = 0;
+  let startPanY = 0;
 
   const onDown = (e) => {
-    // only left button
     if (e.button !== 0) return;
-    // Don't start panning when clicking on a node (let node click work).
-    const tag = (e.target && e.target.tagName) ? String(e.target.tagName).toLowerCase() : "";
+    const tag = e.target && e.target.tagName ? String(e.target.tagName).toLowerCase() : "";
     if (tag === "circle" || tag === "text" || tag === "path") return;
     isDragging.value = true;
     startX = e.clientX;
     startY = e.clientY;
-    startLeft = el.scrollLeft;
-    startTop = el.scrollTop;
+    startPanX = panX.value;
+    startPanY = panY.value;
   };
 
   const onMove = (e) => {
     if (!isDragging.value) return;
-    const dx = e.clientX - startX;
-    const dy = e.clientY - startY;
-    el.scrollLeft = startLeft - dx;
-    el.scrollTop = startTop - dy;
+    panX.value = startPanX + (e.clientX - startX);
+    panY.value = startPanY + (e.clientY - startY);
   };
 
   const onUp = () => {

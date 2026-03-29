@@ -64,7 +64,11 @@ def got() -> operations.GraphOfOperations:
     return g
 
 
-def multiAgentGoT(num_branches: int = 4, local_branch_k: int = 2) -> operations.GraphOfOperations:
+def multiAgentGoT(
+    num_branches: int = 4,
+    local_branch_k: int = 2,
+    critic_max_retries: int = 3,
+) -> operations.GraphOfOperations:
     """
     多智能体 GoT Hybrid (真正的图结构 + 全局动态回溯)：
     Planner 将问题拆解为 N 个子问题，每个子问题启动一个并行的推理分支。
@@ -83,6 +87,7 @@ def multiAgentGoT(num_branches: int = 4, local_branch_k: int = 2) -> operations.
 
     num_hops = max(1, int(num_branches))
     local_branch_k = max(1, int(local_branch_k))
+    critic_max_retries = max(0, int(critic_max_retries))
 
     prev = planner
     for hop in range(num_hops):
@@ -116,7 +121,7 @@ def multiAgentGoT(num_branches: int = 4, local_branch_k: int = 2) -> operations.
         critic_verify = operations.CriticVerifyAndBacktrack(
             target_backtrack_op=retriever,
             target_backtrack_reasoner_op=reasoner,
-            max_retries=2,
+            max_retries=critic_max_retries,
         )
         critic_verify.add_predecessor(reasoner_best)
         g.add_operation(critic_verify)

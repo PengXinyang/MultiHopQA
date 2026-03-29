@@ -102,6 +102,9 @@ Answer:"""
     ma_planner_prompt = """<Instruction>
 You are the Planner agent in a 4-agent multi-hop QA system.
 Decompose the question into at most {max_subquestions} executable sub-questions.
+Each sub-question should introduce ONE new relation or attribute needed for the next step
+(e.g. identify entity → where it is / when / what it owns → name of a part/place tied to that).
+Avoid repeating the same relation in consecutive steps; later steps must depend on earlier answers.
 Output ONLY valid JSON:
 {{"sub_questions": ["...", "...", "..."]}}
 </Instruction>
@@ -130,6 +133,18 @@ Hard constraints:
   - If the SubQuestion asks "When/What year/Date" about an EVENT (e.g., "impeached", "founded", "announced", "launched"),
     prioritize evidence that states the EVENT OCCURRED/STARTED in a specific year/date (e.g., "in 1786", "on 7 January 2011").
   - Do NOT prefer evidence that only gives the DURATION of a later process (e.g., "between 1788 and 1795") unless the question explicitly asks for a duration/range ("between/from-to/how long").
+- Employer vs self-employment (IMPORTANT):
+  - If the SubQuestion asks who "employs", "hired", or is the "employer" of a person, prefer evidence that states an employment or employer relationship with another organization/studio.
+  - Do NOT answer with that person's own company, personal studio, or "operates/owns" business unless the SubQuestion explicitly asks for their own venture.
+- Multi-hop evidence shift (IMPORTANT):
+  - Each SubQuestion may require a DIFFERENT passage than the previous hop. Do NOT keep citing the same title/sentence index by default if that span does not state the relation asked NOW
+    (e.g. "headquarters", "based in", "located in", "capital of", "born in", "castle in", "river in").
+  - When <Bindings> names an entity from a prior hop, actively search the Context for OTHER documents that connect that entity to the relation in the SubQuestion (headquarters, city, country, building, etc.).
+  - You MAY return multiple evidence_spans from different document titles if needed to bridge entity → place → attribute.
+- Binding co-occurrence (CRITICAL):
+  - If <Bindings> is non-empty, every cited sentence MUST mention the bound value(s) literally (e.g. #1's organization name) OR clearly refer to that same entity in the same sentence.
+  - Do NOT pick a paragraph only because it contains the generic word "headquarters" for a different organization (e.g. Apple, Yale, a random NGO) with no mention of #1.
+  - For "castle/building at the headquarters" of a bound company, prefer passages that link THAT company or its known location (#2) to a named building/castle; avoid unrelated associations whose only match is "headquarters" + "castle".
 
 Return ONLY JSON in this exact format:
 {{"evidence_spans":[["title", sent_idx], ...], "evidence_summary":"one short evidence summary grounded in the cited span(s)"}}
@@ -160,6 +175,15 @@ Grounding constraints (CRITICAL):
 - Do NOT speculate or add any detail not explicitly supported by <Evidence>.
 - Do NOT introduce new entities, dates, years, numbers, or ranges that do not appear in <Evidence>.
 - If <Evidence> mentions only a single year/date, do NOT invent an additional year/date.
+- If <SubQuestion> asks who employs / is the employer of someone, answer the hiring organization; if <Evidence> mentions both an employer and that person's own studio/company, choose the employer unless the question asks for the personal business.
+- Answer-type alignment (IMPORTANT):
+  - If <SubQuestion> asks WHERE / headquarters / location / city / country / "based in", the Partial MUST be a geographic answer (place name(s)) explicitly supported by <Evidence>. Do NOT output only an organization or person name unless <Evidence> states that place.
+  - If <SubQuestion> asks for a building/landmark/castle/river/mountain/etc., the Partial MUST name that kind of entity from <Evidence>, not a parent company or unrelated entity.
+  - If <Evidence> does not support the asked relation, output exactly: Partial: NEED_RETRIEVE (do not output a wrong-type guess or a long explanation instead).
+- NEED_RETRIEVE discipline (IMPORTANT):
+  - If <Evidence> already contains a short entity (organization/person/place) that directly answers <SubQuestion>, output it as Partial — do NOT use NEED_RETRIEVE.
+  - Example: if the question asks for the employer company and <Evidence> says the person directed "CompanyX's 1985 film", then CompanyX is the supported employer answer.
+
 Return exactly:
 Partial: <partial answer>
 Confidence: <0.0-1.0>
@@ -208,6 +232,16 @@ Guidelines for TimeFacet:
     TRIAL/PROCEEDINGS began (a single year), if that is what the evidence directly states (e.g., "trial during 1786").
   - If your evidence provides ONLY a RANGE ("between 1788 and 1795") and the question is NOT asking for a duration/range,
     you MUST set TimeFacet=trial_duration and Validation=REJECT with SuggestedAction=backtrack_retrieve (need a single year/date).
+- Employer disambiguation:
+  - If the SubQuestion is about who employs someone and <Evidence> supports a clear employer distinct from that person's own studio/company, but <PartialAnswer> names only the personal studio, set ReasonCode=wrong_entity, SuggestedAction=backtrack_retrieve, Validation=REJECT.
+- Employer / studio from possessive phrasing:
+  - If <SubQuestion> asks for the company that employs or hired the person and <Evidence> states they directed/produced/wrote for a named company's film/show/project (e.g. "Company's 1985 film"), treat that company name as the supported employer: Validation=PASS and RefinedPartial=that company name (from <Evidence> only), unless the SubQuestion explicitly asks for their personal studio instead.
+- Castle / headquarters relevance:
+  - If <SubQuestion> asks for a castle or building at the headquarters and <Bindings> includes #1 (company) or #2 (place), but <Evidence> does not mention #1 or #2 and instead describes another organization's headquarters, set Validation=REJECT, ReasonCode=wrong_entity, SuggestedAction=backtrack_retrieve.
+- Answer-type vs subquestion (IMPORTANT):
+  - If the SubQuestion asks for a place (where/headquarters/location/city/country) but <Evidence> contains no supported place and <PartialAnswer> is only an org/person name or a long non-place reply, set Validation=REJECT, ReasonCode=insufficient_evidence, SuggestedAction=backtrack_retrieve.
+  - If the SubQuestion asks for a specific kind of entity (castle, building, river, date, etc.) but <PartialAnswer> is a different kind (e.g. company name for a "castle" question), set Validation=REJECT with ReasonCode=wrong_entity unless <Evidence> explicitly equates them.
+  - When evidence truly lacks the requested facet, set RefinedPartial to exactly: NEED_RETRIEVE (not a paragraph). Validation may be PASS only if PartialAnswer is already NEED_RETRIEVE and evidence is correctly empty for that facet.
 
 Grounding constraints (CRITICAL):
 - RefinedPartial MUST be fully supported by <Evidence>.
@@ -239,6 +273,12 @@ Hard constraints:
 - Do NOT introduce any new entity that does not appear in the provided partial answers or evidence summaries.
 - If multiple entities appear, choose only the entity that best answers the question.
 - Keep the answer minimal (entity/phrase), not a long explanation.
+- Final-question alignment (CRITICAL):
+  - First infer what the <Question> asks for: person, organization, place/city/country, building/landmark, date/time, number, yes/no, etc.
+  - Your final answer MUST be that type. Do NOT substitute an intermediate-hop answer of a different type
+    (e.g. if the question asks for a castle or city, do NOT answer with a company name from an earlier hop).
+  - Use the hop that corresponds to the FINAL facet asked by the <Question>; earlier hops are only supporting context.
+  - If no partial or evidence supports the requested facet, output: Answer: Not mentioned
 - Temporal precision rule (IMPORTANT): if the question is asking "when"/a date/time AND the provided partials/evidence contain a more specific date than just a year, you MUST keep the finest supported granularity.
   Examples:
   - If you see "April 2012" anywhere relevant, do NOT answer only "2012"; answer "April 2012".

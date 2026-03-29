@@ -128,7 +128,7 @@ class Controller:
                     "op_type": op_type,
                 }
             )
-            
+
             try:
                 previous_thoughts = current_operation.get_previous_thoughts()
                 before_ids = {t.id for t in current_operation.get_thoughts()}
@@ -155,14 +155,7 @@ class Controller:
                             "parent_ids": parent_ids,
                         }
                     )
-                self._emit(
-                    {
-                        "type": "op_end",
-                        "op_id": current_operation.id,
-                        "op_type": op_type,
-                    }
-                )
-                
+
                 # 检查后继操作是否可以执行
                 for operation in current_operation.successors:
                     assert (
@@ -170,7 +163,7 @@ class Controller:
                     ), "操作的后继不在操作图中"
                     if operation.can_be_executed() and operation not in execution_queue:
                         execution_queue.append(operation)
-                        
+
             except BacktrackSignal as backtrack:
                 self.logger.warning("触发全局回溯！原因: %s", backtrack.reason)
                 target_op = backtrack.target_operation
@@ -192,7 +185,16 @@ class Controller:
                     op for op in self.graph.operations
                     if op.can_be_executed() and not op.executed
                 ]
-        
+            finally:
+                # 回溯导致 execute 抛错时也必须发 op_end，否则前端节点会一直处于「思考中」且不易排查
+                self._emit(
+                    {
+                        "type": "op_end",
+                        "op_id": current_operation.id,
+                        "op_type": op_type,
+                    }
+                )
+
         self.logger.info("所有操作执行完成")
         self._emit({"type": "run_end"})
         self.run_executed = True

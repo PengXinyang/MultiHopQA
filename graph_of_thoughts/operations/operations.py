@@ -923,6 +923,22 @@ class AdvanceSubquestion(Operation):
     def _as_str(x) -> str:
         return str(x).strip() if x is not None else ""
 
+    @staticmethod
+    def _should_bind_partial(ans: str) -> bool:
+        """
+        Do not record failed or non-answer placeholders as bindings; they mislead later hops
+        (e.g. binding a company name where a location was required).
+        """
+        a = (ans or "").strip()
+        if not a:
+            return False
+        low = a.lower()
+        if low == "need_retrieve" or low.startswith("need_retrieve"):
+            return False
+        if low == "not mentioned" or low.startswith("not mentioned"):
+            return False
+        return True
+
     def _execute(
         self, lm: AbstractLanguageModel, prompter: Prompter, parser: Parser, **kwargs
     ) -> None:
@@ -940,7 +956,7 @@ class AdvanceSubquestion(Operation):
 
             # Record binding for current hop (1-indexed: #1 is hop0 answer).
             ans = self._as_str(state.get("partial_answer") or state.get("current") or "")
-            if ans:
+            if ans and self._should_bind_partial(ans):
                 bindings = state.get("bindings") or {}
                 if not isinstance(bindings, dict):
                     bindings = {}
