@@ -156,7 +156,7 @@ class LightweightModelGroup(RotatingLanguageModel):
     LITE_MODELS: List[str] = [
         #"chatgpt",  # gpt-3.5-turbo
         #"deepseek-v3",
-        "gemini-2.5-flash-gcli"
+        "gemini-2.5-flash-gcli",
         "gemini-2.5-flash-1",
         "gemini-2.5-flash-2",
         "gemini-3-flash-1",
