@@ -10,6 +10,7 @@ examples
 Dataset
 */results
 */node_modules
+*/dist
 
 *.json
 *.log
