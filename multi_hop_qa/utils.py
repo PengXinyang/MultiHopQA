@@ -1,8 +1,9 @@
 import datetime
+import glob
 import json
 import logging
 import os
-from typing import Dict, List, Callable, Any
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import score
 from data_loader import loadDataset, DatasetType
@@ -158,7 +159,7 @@ def buildProblemParams(item: Dict, method_name: str) -> Dict:
         "candidate_answers": [],
         "online_reasoning_score": 0.0,
         "offline_metric_score": 0.0,
-        "solve_score_threshold": 0.9,
+        "solve_score_threshold": 0.8,
         "line_score_threshold": 0.7,
         "low_trust_penalty": 0.35,
         "method": method_name,
@@ -428,3 +429,223 @@ def _buildCompactResultSummary(executor: Any, item: Dict, method_name: str) -> D
                 "pricing_note": "未能读取 token/费用，请检查语言模型是否实现 prompt_tokens、completion_tokens、cost。",
             }
     return summary
+
+
+def _method_sort_key(method_name: str) -> Tuple[int, str]:
+    if method_name == "io":
+        return (0, method_name)
+    if method_name == "cot":
+        return (1, method_name)
+    if method_name == "tot":
+        return (2, method_name)
+    if method_name == "got":
+        return (3, method_name)
+    if method_name.startswith("multiAgentGoT"):
+        return (4, method_name)
+    return (20, method_name)
+
+
+def aggregate_run_summaries(run_dir: str) -> Dict[str, Any]:
+    """
+    扫描某次实验目录下各方法子文件夹中的 ``*.summary.json``，按方法汇总：
+
+    - **正确率**：各题 ``problem_solved`` 比例，与 ``score.testMultiHop`` / GroundTruth 一致
+      （CoT/ToT/GoT 为 EM；multiAgentGoT 为 LLM 分数 > ``solve_score_threshold``，默认 0.8）。
+    - **平均 score**：各题 ``summary['score']``（最终节点上的图分数）的算术平均，仅统计非 null。
+    - **总费用**：各题 ``usage.estimated_cost_usd`` 之和。
+
+    另附 **EM_accuracy**、**mean_F1**（与金标字符串比对）供参考，与主表「正确率」定义不同。
+    """
+    run_dir = os.path.abspath(run_dir)
+    if not os.path.isdir(run_dir):
+        raise FileNotFoundError(f"run_dir 不存在: {run_dir}")
+
+    pattern = os.path.join(run_dir, "*", "*.summary.json")
+    paths = glob.glob(pattern)
+    by_method: Dict[str, List[str]] = {}
+    for p in paths:
+        method = os.path.basename(os.path.dirname(p))
+        if method.startswith("."):
+            continue
+        by_method.setdefault(method, []).append(p)
+
+    methods_out: Dict[str, Any] = {}
+    for method in sorted(by_method.keys(), key=_method_sort_key):
+        paths_m = sorted(by_method[method])
+        em_hits = 0
+        f1_sum = 0.0
+        solved_hits = 0
+        score_sum = 0.0
+        n_score = 0
+        n_parsed = 0
+        total_cost = 0.0
+        n_cost = 0
+        missing_usage = 0
+        parse_failed = 0
+        for fp in paths_m:
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    row = json.load(f)
+            except Exception as e:
+                logging.warning("跳过无法解析的 summary: %s (%s)", fp, e)
+                parse_failed += 1
+                continue
+            n_parsed += 1
+            if bool(row.get("EM")):
+                em_hits += 1
+            if bool(row.get("problem_solved")):
+                solved_hits += 1
+            try:
+                f1v = float(row.get("F1", 0.0))
+                f1_sum += f1v
+            except (TypeError, ValueError):
+                pass
+            raw_score = row.get("score", None)
+            if raw_score is not None:
+                try:
+                    score_sum += float(raw_score)
+                    n_score += 1
+                except (TypeError, ValueError):
+                    pass
+            usage = row.get("usage")
+            if not isinstance(usage, dict) or usage.get("error"):
+                missing_usage += 1
+                continue
+            try:
+                c = float(usage.get("estimated_cost_usd", 0.0) or 0.0)
+                total_cost += c
+                n_cost += 1
+            except (TypeError, ValueError):
+                missing_usage += 1
+
+        n = n_parsed
+        methods_out[method] = {
+            "num_summaries": n,
+            "summary_files_on_disk": len(paths_m),
+            "summary_parse_failed": parse_failed,
+            "correct_rate": float(solved_hits / n) if n else 0.0,
+            "problem_solved_count": solved_hits,
+            "mean_leaf_score": float(score_sum / n_score) if n_score else None,
+            "mean_leaf_score_n": n_score,
+            "EM_count": em_hits,
+            "EM_accuracy": float(em_hits / n) if n else 0.0,
+            "mean_F1": float(f1_sum / n) if n else 0.0,
+            "total_cost_usd": round(total_cost, 8),
+            "summaries_with_usage_cost": n_cost,
+            "summaries_missing_usage_or_cost": missing_usage,
+        }
+
+    return {
+        "run_dir": run_dir,
+        "methods": methods_out,
+        "note_zh": (
+            "主表「正确率」= problem_solved 为 true 的比例，与 GroundTruth 所用 testMultiHop 一致："
+            "CoT/ToT/GoT 按预测与金标 EM；multiAgentGoT 按 LLM 给出的 score > solve_score_threshold（默认 0.9）。"
+            "「平均score」为各题 summary 中最终节点 score 的算术平均（JSON 字段 mean_leaf_score，仅非 null 参与）。"
+            "「总费用」为各题 usage.estimated_cost_usd 之和。"
+            "另见 EM_accuracy、mean_F1：纯字符串 EM/F1，与 multiAgentGoT 的 LLM 阈值判定不同。"
+        ),
+    }
+
+
+def build_aggregate_tables_json(methods: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    将汇总指标转为与终端主表、参考表一致的行列表，便于单独导出或画图。
+    """
+    if not methods:
+        return {"primary": [], "reference_em_f1": []}
+    names = sorted(methods.keys(), key=_method_sort_key)
+    primary: List[Dict[str, Any]] = []
+    reference: List[Dict[str, Any]] = []
+    for name in names:
+        m = methods[name]
+        primary.append(
+            {
+                "method": name,
+                "N": int(m.get("num_summaries", 0)),
+                "correct_rate": float(m.get("correct_rate", 0.0)),
+                "mean_leaf_score": m.get("mean_leaf_score"),
+                "mean_leaf_score_n": int(m.get("mean_leaf_score_n", 0)),
+                "total_cost_usd": float(m.get("total_cost_usd", 0.0)),
+            }
+        )
+        reference.append(
+            {
+                "method": name,
+                "EM_accuracy": float(m.get("EM_accuracy", 0.0)),
+                "mean_F1": float(m.get("mean_F1", 0.0)),
+            }
+        )
+    return {"primary": primary, "reference_em_f1": reference}
+
+
+def print_aggregate_report_table(agg: Dict[str, Any]) -> None:
+    """将 aggregate_run_summaries 的结果打印为可读表格（正确率 / 平均 score / 费用）。"""
+    methods = agg.get("methods") or {}
+    if not methods:
+        print("\n[汇总] 未找到任何 *.summary.json，跳过表格输出。")
+        return
+    print("\n" + "=" * 96)
+    print(" 数据集级汇总（各方法子目录下的 *.summary.json）")
+    print("=" * 96)
+    hdr = f"{'方法':<26} {'N':>6} {'正确率':>8} {'平均score':>12} {'总费用$':>12}"
+    print(hdr)
+    print("-" * 96)
+    for name in sorted(methods.keys(), key=_method_sort_key):
+        m = methods[name]
+        n = int(m.get("num_summaries", 0))
+        cr = float(m.get("correct_rate", 0.0))
+        ms = m.get("mean_leaf_score")
+        ms_str = f"{float(ms):.4f}" if ms is not None else "  —  "
+        cost = float(m.get("total_cost_usd", 0.0))
+        print(f"{name:<26} {n:>6} {cr:>8.4f} {ms_str:>12} {cost:>12.4f}")
+    print("=" * 96)
+    print(
+        "参考（与金标字符串比对，非 multiAgentGoT 主判定）:"
+    )
+    ref_hdr = f"{'方法':<26} {'EM率':>8} {'平均F1':>10}"
+    print(ref_hdr)
+    print("-" * 48)
+    for name in sorted(methods.keys(), key=_method_sort_key):
+        m = methods[name]
+        em_acc = float(m.get("EM_accuracy", 0.0))
+        mf1 = float(m.get("mean_F1", 0.0))
+        print(f"{name:<26} {em_acc:>8.4f} {mf1:>10.4f}")
+    print("=" * 96)
+    if agg.get("note_zh"):
+        print(agg["note_zh"])
+    print()
+
+
+def finalize_run_aggregate(run_dir: str) -> Optional[Dict[str, Any]]:
+    """
+    写入汇总 JSON 并打印表格。
+
+    - ``dataset_aggregate_metrics.json``：完整指标 + ``tables``（与终端表一致的行数组）+ ``generated_at``
+    - ``dataset_aggregate_table.json``：仅 ``run_dir`` / ``generated_at`` / ``note_zh`` / ``tables``，便于分享或绘图
+    """
+    try:
+        agg = aggregate_run_summaries(run_dir)
+        agg["generated_at"] = datetime.datetime.now().replace(microsecond=0).isoformat()
+        agg["tables"] = build_aggregate_tables_json(agg.get("methods") or {})
+
+        out_path = os.path.join(run_dir, "dataset_aggregate_metrics.json")
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(agg, f, ensure_ascii=False, indent=2)
+
+        table_only = {
+            "run_dir": agg.get("run_dir"),
+            "generated_at": agg.get("generated_at"),
+            "note_zh": agg.get("note_zh"),
+            "tables": agg.get("tables"),
+        }
+        table_path = os.path.join(run_dir, "dataset_aggregate_table.json")
+        with open(table_path, "w", encoding="utf-8") as f:
+            json.dump(table_only, f, ensure_ascii=False, indent=2)
+
+        print_aggregate_report_table(agg)
+        logging.info("数据集汇总已写入: %s 与 %s", out_path, table_path)
+        return agg
+    except Exception as e:
+        logging.warning("数据集汇总失败: %s", e, exc_info=True)
+        return None

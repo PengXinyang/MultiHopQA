@@ -116,11 +116,11 @@ def testMultiHop(state: Dict) -> bool:
     try:
         method = (state.get("method") or "").strip()
         if method.startswith("multiAgentGoT"):
-            threshold = state.get("solve_score_threshold", 0.9)
+            threshold = state.get("solve_score_threshold", 0.8)
             try:
                 threshold = float(threshold)
             except Exception:
-                threshold = 0.9
+                threshold = 0.8
             raw_score = state.get("_thought_score", state.get("score", 0.0))
             try:
                 judge_score = float(raw_score)

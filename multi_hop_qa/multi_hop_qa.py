@@ -5,6 +5,7 @@ import copy
 import logging
 import os
 import random
+import sys
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -17,6 +18,13 @@ from multi_hop_graphs import io, cot, tot, got, multiAgentGoT
 from multi_hop_parser import MultiHopParser
 from multi_hop_prompter import MultiHopPrompter
 from role_aware_lm import RoleAwareLM
+
+# 与 multi_hop_graphs.multiAgentGoT 默认形参一致；并行子进程与串行调用均使用此处（改图规模请改 graphs 或本常量）。
+_MAGOT_DEFAULTS: Dict[str, int] = {
+    "got_hops": 4,
+    "got_branch_k": 2,
+    "got_critic_retries": 3,
+}
 
 
 def _make_lm_for_method(
@@ -60,10 +68,7 @@ def _make_lm_for_method(
 
 
 def _method_to_parallel_tag(method: Callable[..., operations.GraphOfOperations]) -> str:
-    """
-    将主进程中的方法对象转为可 pickle 的短标签，供子进程还原。
-    自定义 multiAgentGoT 工厂（如 multiAgentGoT_configured）一律映射为 multiAgentGoT，具体超参由 parallel_got 传入子进程。
-    """
+    """将主进程中的方法对象转为可 pickle 的短标签；multiAgentGoT* 均映射为 multiAgentGoT。"""
     n = method.__name__
     if n.startswith("multiAgentGoT"):
         return "multiAgentGoT"
@@ -80,11 +85,15 @@ def _resolve_method_from_tag(
     """子进程内根据标签还原与主进程等价的图构建函数。"""
     if tag == "multiAgentGoT":
         def factory(max_subquestions: int = 4) -> operations.GraphOfOperations:
-            nh = max(1, int(max_subquestions or 1), int(pg.get("got_hops", 4)))
+            nh = max(
+                1,
+                int(max_subquestions or 1),
+                int(pg.get("got_hops", _MAGOT_DEFAULTS["got_hops"])),
+            )
             return multiAgentGoT(
                 nh,
-                int(pg.get("got_branch_k", 2)),
-                max(1, int(pg.get("got_critic_retries", 3))),
+                int(pg.get("got_branch_k", _MAGOT_DEFAULTS["got_branch_k"])),
+                max(1, int(pg.get("got_critic_retries", _MAGOT_DEFAULTS["got_critic_retries"]))),
             )
 
         factory.__name__ = "multiAgentGoT"
@@ -106,9 +115,11 @@ def _multi_hop_pool_worker(payload: Dict[str, Any]) -> Dict[str, Any]:
     role_model_names: Dict[str, str] = payload["role_model_names"]
     method_tags: List[str] = list(payload["method_tags"])
     pg = {
-        "got_hops": int(payload.get("got_hops", 4)),
-        "got_branch_k": int(payload.get("got_branch_k", 2)),
-        "got_critic_retries": int(payload.get("got_critic_retries", 3)),
+        "got_hops": int(payload.get("got_hops", _MAGOT_DEFAULTS["got_hops"])),
+        "got_branch_k": int(payload.get("got_branch_k", _MAGOT_DEFAULTS["got_branch_k"])),
+        "got_critic_retries": int(
+            payload.get("got_critic_retries", _MAGOT_DEFAULTS["got_critic_retries"])
+        ),
     }
 
     prompter = MultiHopPrompter()
@@ -158,7 +169,6 @@ def run(
         max_samples: int = 100,
         vis_store: Optional[EventStore] = None,
         parallel_workers: int = 1,
-        parallel_got: Optional[dict] = None,
 ) -> float:
     """
     加载多跳问答数据集（HotpotQA / MuSiQue），对指定样本和指定方法运行 GoT 框架，
@@ -173,7 +183,6 @@ def run(
         data_path: 数据集路径，None 则使用默认 HotpotQA
         max_samples: 最大加载样本数
         parallel_workers: >1 时按「每题一个进程」并行；同一题内 methods 顺序串行执行
-        parallel_got: 并行时 multiAgentGoT 使用的 got_hops / got_branch_k / got_critic_retries
     
     Returns:
         spent: 实际花费（美元）
@@ -234,11 +243,7 @@ def run(
     prompter = MultiHopPrompter()
     parser = MultiHopParser()
 
-    pg = parallel_got or {
-        "got_hops": 4,
-        "got_branch_k": 2,
-        "got_critic_retries": 3,
-    }
+    pg = dict(_MAGOT_DEFAULTS)
 
     if pw > 1:
         assert parallel_method_tags is not None
@@ -254,9 +259,9 @@ def run(
                     "config_lm_path": config_lm_path,
                     "role_model_names": dict(role_model_names),
                     "method_tags": parallel_method_tags,
-                    "got_hops": int(pg.get("got_hops", 4)),
-                    "got_branch_k": int(pg.get("got_branch_k", 2)),
-                    "got_critic_retries": int(pg.get("got_critic_retries", 3)),
+                    "got_hops": int(pg["got_hops"]),
+                    "got_branch_k": int(pg["got_branch_k"]),
+                    "got_critic_retries": int(pg["got_critic_retries"]),
                 }
             )
 
@@ -281,6 +286,7 @@ def run(
                     print(f"  [并行 {done}/{total}] 失败 _id={sid} err={res.get('error', '')[:200]}")
                 if budget <= 0:
                     logging.error("预算耗尽；已提交的任务仍会由子进程跑完，请提高 budget 或减少样本。")
+        utils.finalize_run_aggregate(run_dir)
         return spent
 
     for idx, item in enumerate(selected, start=1):
@@ -318,6 +324,7 @@ def run(
             budget -= cost
             spent += cost
 
+    utils.finalize_run_aggregate(run_dir)
     return spent
 
 
@@ -350,30 +357,29 @@ if __name__ == "__main__":
         help="只跑该 id/_id 对应的题目（优先于 --num_samples 与全量）",
     )
     parser.add_argument(
-        "--got_hops",
-        type=int,
-        default=4,
-        help="multiAgentGoT 图中 hop 槽位（应 ≥ 数据集中该集最大跳数；Hotpot 多为 2，MuSiQue 常 2–4）",
-    )
-    parser.add_argument(
-        "--got_branch_k",
-        type=int,
-        default=2,
-        help="每跳 Retriever/Reasoner 并行分支数；设为 1 可明显缩短时间（略降多样性）",
-    )
-    parser.add_argument(
-        "--got_critic_retries",
-        type=int,
-        default=3,
-        help="Critic REJECT 后每跳最大回溯次数；减小可加速（可能更易早停在不理想证据上）",
-    )
-    parser.add_argument(
         "--workers",
         type=int,
         default=1,
-        help="并行进程数（1=整批串行）。>1 时每题一个进程并行，题内 methods（如 cot→tot→got→multiAgentGoT）仍串行",
+        help="并行进程数（1=整批串行）。>1 时每题一个进程并行，题内按 approaches 列表顺序串行",
+    )
+    parser.add_argument(
+        "--aggregate_only",
+        type=str,
+        default="",
+        metavar="RUN_DIR",
+        help="不跑实验：仅扫描 *.summary.json，生成 dataset_aggregate_metrics.json、dataset_aggregate_table.json 并打印表后退出",
     )
     args = parser.parse_args()
+
+    agg_path = (args.aggregate_only or "").strip()
+    if agg_path:
+        run_dir_abs = os.path.abspath(agg_path)
+        if not os.path.isdir(run_dir_abs):
+            print(f"目录不存在: {run_dir_abs}", file=sys.stderr)
+            sys.exit(1)
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
+        utils.finalize_run_aggregate(run_dir_abs)
+        sys.exit(0)
 
     # 数据集路径和大小映射
     DATASET_CONFIG = {
@@ -421,17 +427,7 @@ if __name__ == "__main__":
     else:
         samples = list(range(len_data))
 
-
-    def multiAgentGoT_configured(max_subquestions: int = 4) -> operations.GraphOfOperations:
-        nh = max(1, int(max_subquestions or 1), int(args.got_hops))
-        return multiAgentGoT(
-            num_branches=nh,
-            local_branch_k=int(args.got_branch_k),
-            critic_max_retries=max(1, int(args.got_critic_retries)),
-        )
-
-
-    approaches = [cot, tot, got, multiAgentGoT_configured]
+    approaches = [multiAgentGoT]
 
     # 角色模型分配（方案A：一个角色一个智能体/模型实例）
     # 角色模型分配
@@ -477,10 +473,5 @@ if __name__ == "__main__":
         max_samples=len_data,
         vis_store=vis_store,
         parallel_workers=max(1, args.workers),
-        parallel_got={
-            "got_hops": args.got_hops,
-            "got_branch_k": args.got_branch_k,
-            "got_critic_retries": args.got_critic_retries,
-        },
     )
     logging.info("Spent %s out of %s budget.", spent, args.budget)
