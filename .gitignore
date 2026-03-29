@@ -11,6 +11,6 @@ dataset
 */results
 */node_modules
 */dist
-*/__pycache__
+__pycache__
 config.json
 *.log
