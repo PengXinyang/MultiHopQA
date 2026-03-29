@@ -398,6 +398,10 @@ class MultiHopParser(parser.Parser):
                             "validation_decision": str(new_state.get("validation_decision", "")),
                             "reason_code": str(new_state.get("reason_code", "")),
                             "time_facet": str(new_state.get("time_facet", "")),
+                            "confidence": float(new_state.get("confidence", 0.0) or 0.0),
+                            "line_score": float(new_state.get("line_score", new_state.get("confidence", 0.0)) or 0.0),
+                            "line_trust": str(new_state.get("line_trust", "")),
+                            "max_retry_reached": bool(new_state.get("max_retry_reached", False)),
                         }
                     )
                     new_state["hop_history"] = hist

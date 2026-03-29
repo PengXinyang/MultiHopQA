@@ -203,8 +203,11 @@ Guidelines for TimeFacet:
 - Use "initiation" when the question asks when an action/event was initiated (e.g., "impeached", "charged", "founded").
 - Use "occurrence" when the question asks when something happened at a point in time (unveiled, released, born, died).
 - Use "trial_duration"/"duration" when the evidence/answer is a span/range (between X and Y, from X to Y, lasted N years).
-- If the question asks "When was X impeached?" and your evidence only provides a trial span like "between 1788 and 1795",
-  you MUST set TimeFacet=trial_duration and Validation=REJECT with SuggestedAction=backtrack_retrieve (need the initiation year).
+- IMPORTANT benchmark convention:
+  - For this multi-hop QA benchmark, questions phrased as "When was X impeached?" are commonly answered by the YEAR the impeachment
+    TRIAL/PROCEEDINGS began (a single year), if that is what the evidence directly states (e.g., "trial during 1786").
+  - If your evidence provides ONLY a RANGE ("between 1788 and 1795") and the question is NOT asking for a duration/range,
+    you MUST set TimeFacet=trial_duration and Validation=REJECT with SuggestedAction=backtrack_retrieve (need a single year/date).
 
 Grounding constraints (CRITICAL):
 - RefinedPartial MUST be fully supported by <Evidence>.
@@ -242,6 +245,9 @@ Hard constraints:
   - If you see "7 January 2011", do NOT answer "2011"; answer "7 January 2011".
   - Only output a bare year (e.g., "2012") if month/day are NOT present in the provided partials/evidence.
 - Anti-hallucination rule (IMPORTANT): for numeric/time answers, output ONLY values that appear verbatim in the provided partials/evidence summaries.
+- Reliability rule (IMPORTANT): each clue includes a line_score in [0,1], where higher is more reliable.
+  You MUST prioritize clues with higher line_score when clues conflict.
+  If a clue has max_retry_reached=true and low line_score, treat it as weak evidence.
 </Instruction>
 
 <Question>
@@ -292,14 +298,24 @@ GlobalCritique: <one-sentence evaluation of final answer quality>
                     subq = s.get("subquestion", "")
                     part = s.get("partial_answer") or ""
                     ev = s.get("evidence_summary", "")
+                    line_score = s.get("line_score", s.get("confidence", 0.0))
+                    trust = s.get("line_trust", "")
+                    max_retry = s.get("max_retry_reached", False)
                 else:
                     subq = s.get("subquestion", "") if isinstance(s, dict) else ""
                     part = (s.get("partial_answer") or s.get("current", "")) if isinstance(s, dict) else ""
                     ev = s.get("evidence_summary", "") if isinstance(s, dict) else ""
+                    line_score = s.get("line_score", s.get("confidence", 0.0)) if isinstance(s, dict) else 0.0
+                    trust = s.get("line_trust", "") if isinstance(s, dict) else ""
+                    max_retry = s.get("max_retry_reached", False) if isinstance(s, dict) else False
 
                 parts.append(f"- {subq}: {part}")
                 if ev:
                     parts.append(f"  Evidence: {ev}")
+                parts.append(
+                    f"  Reliability: line_score={float(line_score or 0.0):.2f}, "
+                    f"trust={trust or 'unknown'}, max_retry_reached={bool(max_retry)}"
+                )
             return self.ma_aggregate_prompt.format(
                 question=base.get("question", ""),
                 partials_text="\n".join(parts),

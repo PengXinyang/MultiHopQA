@@ -5,10 +5,11 @@ import logging
 import os
 import random
 import time
-from typing import List, Callable
+from typing import List, Callable, Optional
 
 import utils
 from graph_of_thoughts import language_models, operations
+from graph_of_thoughts.visualization import EventStore, start_realtime_server
 from multi_hop_graphs import io, cot, tot, got, multiAgentGoT
 from multi_hop_parser import MultiHopParser
 from multi_hop_prompter import MultiHopPrompter
@@ -26,6 +27,7 @@ def run(
         dataset: str,
         data_path: str = None,
         max_samples: int = 100,
+        vis_store: Optional[EventStore] = None,
 ) -> float:
     """
     加载多跳问答数据集（HotpotQA / MuSiQue），对指定样本和指定方法运行 GoT 框架，
@@ -127,8 +129,23 @@ def run(
                     )
 
             # 执行单个方法
+            run_id = f"{method.__name__}:{item.get('_id', idx)}"
+            print(f"  run_id: {run_id}")
+            if vis_store is not None:
+                vis_store.publish(run_id, {
+                    "type": "run_meta",
+                    "run_id": run_id,
+                    "sample_id": str(item.get("_id", "")),
+                    "method": method.__name__,
+                    "question": item.get("question", ""),
+                })
+
+            def _event_sink(payload, _rid=run_id):
+                if vis_store is not None:
+                    vis_store.publish(_rid, payload)
+
             cost = utils.runSingleMethod(item=item, method=method, lm=lm, prompter=prompter, parser=parser,
-                                         run_dir=run_dir)
+                                         run_dir=run_dir, event_sink=_event_sink if vis_store is not None else None)
 
             budget -= cost
             spent += cost
@@ -147,6 +164,12 @@ if __name__ == "__main__":
                         help="预算（美元）")
     parser.add_argument("--num_samples", type=int, default=1,
                         help="随机抽取的样本数")
+    parser.add_argument("--realtime_vis", action="store_true",
+                        help="开启实时推理图可视化服务")
+    parser.add_argument("--vis_host", type=str, default="127.0.0.1",
+                        help="实时可视化服务地址")
+    parser.add_argument("--vis_port", type=int, default=8765,
+                        help="实时可视化服务端口")
     parser.add_argument(
         "--sample_id",
         type=str,
@@ -218,6 +241,13 @@ if __name__ == "__main__":
     print(f"样本数: {len(samples)}")
     print(f"预算: ${args.budget}")
 
+    vis_store = None
+    if args.realtime_vis:
+        vis_store = EventStore()
+        start_realtime_server(vis_store, host=args.vis_host, port=args.vis_port)
+        print(f"实时可视化服务已启动: http://{args.vis_host}:{args.vis_port}/")
+        print("运行中的每个样本 run_id 形如: multiAgentGoT:<sample_id>")
+
     spent = run(
         samples,
         approaches,
@@ -226,5 +256,6 @@ if __name__ == "__main__":
         args.dataset,
         data_path=data_path,
         max_samples=len_data,
+        vis_store=vis_store,
     )
     logging.info("Spent %s out of %s budget.", spent, args.budget)

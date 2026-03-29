@@ -159,6 +159,8 @@ def buildProblemParams(item: Dict, method_name: str) -> Dict:
         "online_reasoning_score": 0.0,
         "offline_metric_score": 0.0,
         "solve_score_threshold": 0.9,
+        "line_score_threshold": 0.7,
+        "low_trust_penalty": 0.35,
         "method": method_name,
     }
 
@@ -170,6 +172,7 @@ def runSingleMethod(
         prompter: Any,
         parser: Any,
         run_dir: str,
+        event_sink: Any = None,
 ) -> float:
     """
     对单个样本执行单个方法，并保存结果。
@@ -277,6 +280,7 @@ def runSingleMethod(
         prompter,
         parser,
         problem_params,
+        event_sink=event_sink,
     )
 
     try:

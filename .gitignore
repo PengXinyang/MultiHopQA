@@ -9,6 +9,7 @@ HELP.md
 examples
 Dataset
 */results
+*/node_modules
 
 *.json
 *.log

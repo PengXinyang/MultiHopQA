@@ -246,6 +246,9 @@ class Score(Operation):
             for thought, score in zip(previous_thoughts, scores):
                 new_thought = Thought.from_thought(thought)
                 new_thought.score = score
+                if isinstance(new_thought.state, dict):
+                    new_thought.state = dict(new_thought.state)
+                    new_thought.state["_score_raw_responses"] = list(responses) if "responses" in locals() else []
                 self.thoughts.append(new_thought)
         else:
             # 单独评分：逐个思维评分
@@ -268,6 +271,9 @@ class Score(Operation):
                     self.logger.debug("LLM 响应: %s", responses)
                     score = parser.parse_score_answer([thought.state], responses)[0]
                 new_thought.score = score
+                if isinstance(new_thought.state, dict):
+                    new_thought.state = dict(new_thought.state)
+                    new_thought.state["_score_raw_responses"] = list(responses) if "responses" in locals() else []
                 # multiAgentGoT 在最终答案评分阶段记录全局评价
                 try:
                     if (
@@ -490,6 +496,7 @@ class Generate(Operation):
 
             for new_state in parser.parse_generate_answer(base_state, responses):
                 new_state = {**base_state, **new_state}
+                new_state["_llm_raw_responses"] = list(responses)
                 self.thoughts.append(Thought(new_state))
                 self.logger.debug(
                     "创建新思维 %d，状态: %s", self.thoughts[-1].id, self.thoughts[-1].state
@@ -627,6 +634,9 @@ class Aggregate(Operation):
         if isinstance(parsed, dict):
             parsed = [parsed]
         for new_state in parsed:
+            if isinstance(new_state, dict):
+                new_state = dict(new_state)
+                new_state["_llm_raw_responses"] = list(responses)
             self.thoughts.append(Thought({**base_state, **new_state}))
 
 
@@ -999,6 +1009,13 @@ class CriticVerifyAndBacktrack(Operation):
     def get_thoughts(self) -> List[Thought]:
         return self.thoughts
 
+    @staticmethod
+    def _safe_float(v, default: float = 0.0) -> float:
+        try:
+            return float(v)
+        except Exception:
+            return float(default)
+
     def _execute(
             self, lm: AbstractLanguageModel, prompter: Prompter, parser: Parser, **kwargs
     ) -> None:
@@ -1028,6 +1045,21 @@ class CriticVerifyAndBacktrack(Operation):
                 continue
                 
             parsed_state = parsed_states[0]
+            if isinstance(parsed_state, dict):
+                parsed_state = dict(parsed_state)
+                parsed_state["_llm_raw_responses"] = list(responses)
+            conf = self._safe_float(
+                parsed_state.get("confidence", base_state.get("confidence", 0.0)),
+                0.0,
+            )
+            score_threshold = self._safe_float(
+                base_state.get("line_score_threshold", 0.7),
+                0.7,
+            )
+            low_trust_penalty = self._safe_float(
+                base_state.get("low_trust_penalty", 0.35),
+                0.35,
+            )
             
             # 检查 Critic 的验证决定
             if parsed_state.get("validation_decision") == "REJECT":
@@ -1078,6 +1110,15 @@ class CriticVerifyAndBacktrack(Operation):
                     )
                 else:
                     self.logger.warning("达到最大重试次数 (%d)，强行通过。", self.max_retries)
+                    line_score = conf
+                    if line_score < score_threshold:
+                        line_score = max(0.0, line_score - low_trust_penalty)
+                    parsed_state["line_score"] = line_score
+                    parsed_state["line_trust"] = (
+                        "high" if line_score >= score_threshold else "low"
+                    )
+                    parsed_state["max_retry_reached"] = True
+                    parsed_state["forced_pass_after_max_retries"] = True
             else:
                 # On PASS, clear persisted feedback for this hop to avoid contaminating later steps.
                 pp_ref = kwargs.get("__pp_ref")
@@ -1090,6 +1131,11 @@ class CriticVerifyAndBacktrack(Operation):
                         except Exception:
                             hop_key_str = str(hop_key)
                         fb_by_hop.pop(hop_key_str, None)
+                parsed_state["line_score"] = conf
+                parsed_state["line_trust"] = (
+                    "high" if conf >= score_threshold else "low"
+                )
+                parsed_state["max_retry_reached"] = False
             
             # 如果 PASS 或达到最大重试次数，则保留该思维
             new_state = {**base_state, **parsed_state}
