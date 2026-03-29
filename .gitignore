@@ -7,7 +7,7 @@ HELP.md
 *.ipr
 
 examples
-Dataset
+dataset
 */results
 */node_modules
 */dist
