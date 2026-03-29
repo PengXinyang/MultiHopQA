@@ -57,11 +57,6 @@ class Gemini(AbstractLanguageModel):
         self.max_tokens: int = self.config["max_tokens"]
         self.stop: Union[str, List[str]] = self.config["stop"]
 
-        # organization 字段：Gemini 不强制需要，仅为与 ChatGPT 配置结构对应
-        self.organization: str = self.config.get("organization", "")
-        if self.organization == "":
-            self.logger.warning("Gemini organization 配置为空（通常无影响）")
-
         # API Key：默认同环境变量；ignore_env_api_key 时仅用配置（多进程多 key 分组）
         if ignore_env_api_key:
             self.api_key = str(self.config.get("api_key", "") or "")
