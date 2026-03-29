@@ -12,5 +12,5 @@ Dataset
 */node_modules
 */dist
 
-*.json
+config.json
 *.log
