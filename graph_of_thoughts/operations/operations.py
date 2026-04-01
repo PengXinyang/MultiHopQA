@@ -965,8 +965,7 @@ class AdvanceSubquestion(Operation):
 
             next_sub_id = sub_id + 1
             if next_sub_id >= min(self.max_hops, len(subquestions) or self.max_hops):
-                # No next hop; just carry state forward unchanged.
-                self.thoughts.append(Thought(state))
+                # No next hop; stop here. The Selector before Aggregate will pick up the thought from the previous Critic.
                 continue
 
             state["sub_id"] = next_sub_id

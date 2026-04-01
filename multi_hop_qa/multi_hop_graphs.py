@@ -90,6 +90,7 @@ def multiAgentGoT(
     critic_max_retries = max(0, int(critic_max_retries))
 
     prev = planner
+    critics = []
     for hop in range(num_hops):
         # Retriever
         retriever = operations.Generate(1, local_branch_k)
@@ -125,6 +126,8 @@ def multiAgentGoT(
         )
         critic_verify.add_predecessor(reasoner_best)
         g.add_operation(critic_verify)
+        
+        critics.append(critic_verify)
 
         prev = critic_verify
 
@@ -136,8 +139,20 @@ def multiAgentGoT(
             prev = adv
 
     # 聚合最终结果（此时 state 里已积累 bindings / 每跳 partials）
+    # 使用 Selector 从所有 Critic 中挑选出真正完成最后一跳的思维
+    sel = operations.Selector(
+        lambda thoughts: [
+            t for t in thoughts 
+            if t.state.get("sub_id", 0) >= len(t.state.get("subquestions", [])) - 1
+            or t.state.get("sub_id", 0) >= num_hops - 1
+        ]
+    )
+    for c in critics:
+        sel.add_predecessor(c)
+    g.add_operation(sel)
+
     aggregate = operations.Aggregate(1)
-    aggregate.add_predecessor(prev)
+    aggregate.add_predecessor(sel)
     g.add_operation(aggregate)
 
     final_score = operations.Score(1, False, None)

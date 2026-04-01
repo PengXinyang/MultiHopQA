@@ -317,7 +317,8 @@ def run(
         if use_pool_gemini:
             pool_kw["initializer"] = _pool_init_gemini_slot
             pool_kw["initargs"] = (ctx.Value("i", 0),)
-        with ProcessPoolExecutor(**pool_kw) as ex:
+        ex = ProcessPoolExecutor(**pool_kw)
+        try:
             futures = {ex.submit(_multi_hop_pool_worker, t): t for t in tasks}
             for fut in as_completed(futures):
                 done += 1
@@ -343,6 +344,15 @@ def run(
                         progress_completed_n=done,
                         print_table=False,
                     )
+        except KeyboardInterrupt:
+            print("\n[!] 收到中断信号 (Ctrl+C)，正在强制终止所有子进程...")
+            for p in ex._processes.values():
+                p.terminate()
+            ex.shutdown(wait=False)
+            print("[!] 子进程已终止，退出程序。")
+            sys.exit(1)
+        finally:
+            ex.shutdown(wait=True)
         utils.finalize_run_aggregate(run_dir)
         return spent
 
