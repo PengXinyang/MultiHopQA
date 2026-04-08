@@ -506,7 +506,8 @@ if __name__ == "__main__":
     else:
         samples = list(range(len_data))
 
-    approaches = [cot, tot, got, multiAgentGoT]
+    #approaches = [cot, tot, got, multiAgentGoT]
+    approaches = [multiAgentGoT]
 
     # 角色模型分配（方案A：一个角色一个智能体/模型实例）
     # 角色模型分配

@@ -288,6 +288,7 @@ Hard constraints:
 - Reliability rule (IMPORTANT): each clue includes a line_score in [0,1], where higher is more reliable.
   You MUST prioritize clues with higher line_score when clues conflict.
   If a clue has max_retry_reached=true and low line_score, treat it as weak evidence.
+  If a clue has validation=REJECT, it means this partial answer was explicitly rejected by the critic. You MUST ignore REJECTED answers whenever possible, and rely on the PASS answers instead.
 </Instruction>
 
 <Question>
@@ -341,6 +342,7 @@ GlobalCritique: <one-sentence evaluation of final answer quality>
                     line_score = s.get("line_score", s.get("confidence", 0.0))
                     trust = s.get("line_trust", "")
                     max_retry = s.get("max_retry_reached", False)
+                    validation = s.get("validation_decision", "UNKNOWN")
                 else:
                     subq = s.get("subquestion", "") if isinstance(s, dict) else ""
                     part = (s.get("partial_answer") or s.get("current", "")) if isinstance(s, dict) else ""
@@ -348,12 +350,13 @@ GlobalCritique: <one-sentence evaluation of final answer quality>
                     line_score = s.get("line_score", s.get("confidence", 0.0)) if isinstance(s, dict) else 0.0
                     trust = s.get("line_trust", "") if isinstance(s, dict) else ""
                     max_retry = s.get("max_retry_reached", False) if isinstance(s, dict) else False
+                    validation = s.get("validation_decision", "UNKNOWN") if isinstance(s, dict) else "UNKNOWN"
 
                 parts.append(f"- {subq}: {part}")
                 if ev:
                     parts.append(f"  Evidence: {ev}")
                 parts.append(
-                    f"  Reliability: line_score={float(line_score or 0.0):.2f}, "
+                    f"  Reliability: validation={validation}, line_score={float(line_score or 0.0):.2f}, "
                     f"trust={trust or 'unknown'}, max_retry_reached={bool(max_retry)}"
                 )
             return self.ma_aggregate_prompt.format(

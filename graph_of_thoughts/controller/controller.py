@@ -75,11 +75,37 @@ class Controller:
                 thinking.extend([str(x) for x in val if str(x).strip()])
             elif isinstance(val, str) and val.strip():
                 thinking.append(val)
+        actual_role = state.get("agent_role", "")
+        if str(state.get("method", "")).startswith("multiAgentGoT"):
+            if op_type == "aggregate":
+                actual_role = "aggregator"
+            elif op_type == "generate":
+                phase = state.get("phase", -1)
+                if phase == 1:
+                    actual_role = "planner"
+                elif phase == 2:
+                    actual_role = "retriever"
+                elif phase == 3:
+                    actual_role = "reasoner"
+            elif op_type == "critic_verify_and_backtrack":
+                actual_role = "critic"
+            elif op_type in ("score", "keep_best_n"):
+                actual_role = "critic"
+            elif op_type == "advance_subquestion":
+                actual_role = "advance"
+            elif op_type == "selector":
+                actual_role = "aggregate"
+            elif op_type == "aggregate":
+                actual_role = "final_answer"
+
+        hop_str = f"@hop{state.get('sub_id', -1)}" if state.get("sub_id") is not None else ""
+        label = f"{actual_role or op_type}{hop_str}"
+
         return {
             "id": f"t_{thought.id}",
             "thought_id": thought.id,
-            "label": f"{state.get('agent_role', op_type)}@hop{state.get('sub_id', -1)}",
-            "role": state.get("agent_role", ""),
+            "label": label,
+            "role": actual_role,
             "hop": state.get("sub_id", -1),
             "phase": state.get("phase", -1),
             "op_id": op_id,

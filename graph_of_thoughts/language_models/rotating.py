@@ -165,11 +165,11 @@ class LightweightModelGroup(RotatingLanguageModel):
     LITE_MODELS: List[str] = [
         #"chatgpt",  # gpt-3.5-turbo
         #"deepseek-v3",
-        #"gemini-2.5-flash-gcli",
-        "gemini-2.5-flash-1",
-        "gemini-2.5-flash-2",
-        "gemini-3-flash-1",
-        "gemini-3-flash-2",
+        "gemini-2.5-flash-gcli",
+        # "gemini-2.5-flash-1",
+        # "gemini-2.5-flash-2",
+        # "gemini-3-flash-1",
+        # "gemini-3-flash-2",
     ]
 
     #: 并行且按进程分配 Gemini key 组时：每角色内为逻辑名，组内先 2.5-flash 再 3-flash，组间由 GeminiGroupedFailover 切换
@@ -229,12 +229,12 @@ class HeavyModelGroup(RotatingLanguageModel):
                 model_names = [
                     #"chatgpt4",
                     #"deepseek-r1",
-                    #"gemini-2.5-pro-gcli",
+                    "gemini-2.5-pro-gcli",
                     #"gemini-3-pro-gcli",
-                    "gemini-2.5-pro-1",
-                    "gemini-2.5-pro-2",
-                    "gemini-3-pro-1",
-                    "gemini-3-pro-2",
+                    # "gemini-2.5-pro-1",
+                    # "gemini-2.5-pro-2",
+                    # "gemini-3-pro-1",
+                    # "gemini-3-pro-2",
                 ]
         super().__init__(
             config_path=config_path,

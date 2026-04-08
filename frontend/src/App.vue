@@ -193,6 +193,9 @@ function roleColor(role) {
   if (r === "retriever") return "#22c55e";
   if (r === "reasoner") return "#3b82f6";
   if (r === "critic" || r === "critic_done") return "#ef4444";
+  if (r === "aggregate" || r === "aggregator" || r === "final_answer") return "#ec4899";
+  if (r === "advance") return "#14b8a6";
+  if (r === "selector") return "#64748b";
   return "#8b5cf6";
 }
 function roleBorder(role) {
@@ -201,19 +204,87 @@ function roleBorder(role) {
   if (r === "retriever") return "#bbf7d0";
   if (r === "reasoner") return "#bfdbfe";
   if (r === "critic" || r === "critic_done") return "#fecaca";
+  if (r === "aggregate" || r === "aggregator" || r === "final_answer") return "#fbcfe8";
+  if (r === "advance") return "#ccfbf1";
+  if (r === "selector") return "#cbd5e1";
   return "#d6c3ff";
 }
 
-function colForOp(opId) {
-  const k = String(opId);
+function colForNode(n) {
+  const method = titleToMethodName(methodTitle.value);
+  if (method === "multiAgentGoT") {
+    const op = n.op_type || "";
+    const phase = n.phase;
+    const hop = n.hop >= 0 ? n.hop : 0;
+    
+    // Planner
+    if (op === "generate" && phase === 1) return 0;
+    
+    // All hops share the same column offsets to keep them vertically aligned
+    const hopOffset = 1;
+    
+    if (op === "generate" && phase === 2) return hopOffset;
+    if (op === "score" && phase === 2) return hopOffset + 1;
+    if (op === "keep_best_n" && phase === 2) return hopOffset + 2;
+    
+    if (op === "generate" && phase === 3) return hopOffset + 3;
+    if (op === "score" && phase === 3) return hopOffset + 4;
+    if (op === "keep_best_n" && phase === 3) return hopOffset + 5;
+    
+    if (op === "critic_verify_and_backtrack") return hopOffset + 6;
+    if (op === "advance_subquestion") return hopOffset + 7;
+    
+    // Final aggregation phase
+    if (op === "selector") return 9;
+    if (op === "aggregate") return 10;
+    if (op === "score" && phase === 4) return 11;
+    if (op === "keep_best_n" && phase === 4) return 12;
+    if (op === "ground_truth_evaluator") return 13;
+  }
+  const k = String(n.op_id);
   if (!opColumn.has(k)) opColumn.set(k, opColumn.size);
   return opColumn.get(k);
 }
-function nextRow(opId) {
-  const k = String(opId);
-  const n = opRows.get(k) || 0;
-  opRows.set(k, n + 1);
-  return n;
+
+function nextRow(colIndex, n) {
+  const method = titleToMethodName(methodTitle.value);
+  if (method === "multiAgentGoT") {
+    // Center planner and final nodes vertically (e.g., around row 5)
+    if ((n.op_type === "generate" && n.phase === 1) || 
+        n.op_type === "selector" || 
+        n.op_type === "aggregate" || 
+        (n.op_type === "score" && n.phase === 4) || 
+        (n.op_type === "keep_best_n" && n.phase === 4) || 
+        n.op_type === "ground_truth_evaluator") {
+        
+        const k = String(colIndex) + "_centered";
+        const count = opRows.get(k) || 0;
+        opRows.set(k, count + 1);
+        return 5 + count;
+    }
+    
+    let hop = n.hop >= 0 ? n.hop : 0;
+    
+    // Advance node has already incremented its hop in the state, 
+    // so we subtract 1 to align it with the row of the hop it originated from.
+    if (n.op_type === "advance_subquestion") {
+        hop = Math.max(0, hop - 1);
+    }
+    
+    // Base row offset based on hop to separate hops vertically
+    const baseRow = hop * 3; 
+    
+    const k = String(colIndex) + "_" + String(hop);
+    const count = opRows.get(k) || 0;
+    opRows.set(k, count + 1);
+    
+    return baseRow + count;
+  }
+  
+  const k = String(colIndex);
+  const count = opRows.get(k) || 0;
+  opRows.set(k, count + 1);
+  return count;
 }
 
 function resetGraph() {
@@ -280,8 +351,8 @@ function ensureEdge(sourceId, targetId, idx) {
 function ensureNode(node, opId, opType, parentIds) {
   const id = node.id;
   if (nodesById.has(id)) return;
-  const col = colForOp(opId);
-  const row = nextRow(opId);
+  const col = colForNode(node);
+  const row = nextRow(col, node);
   const x = marginX + col * dx;
   const y = marginY + row * dy;
 
@@ -304,8 +375,28 @@ function ensureNode(node, opId, opType, parentIds) {
   nodesById.set(id, n);
   nodes.value = Array.from(nodesById.values());
 
+  // Connect to planner if this is a hop's first retriever
+  const method = titleToMethodName(methodTitle.value);
+  if (method === "multiAgentGoT" && opType === "generate" && node.phase === 2) {
+    const plannerNode = Array.from(nodesById.values()).find(
+      (n) => n.op_type === "generate" && n.phase === 1
+    );
+    if (plannerNode) {
+      ensureEdge(plannerNode.id, id, 0);
+    }
+  }
+
+  // Draw regular edges
   (parentIds || []).forEach((pid, idx) => {
-    ensureEdge(pid, id, idx);
+    // If this is a hop > 0 retriever, do NOT draw the edge from the previous hop's advance node
+    // because we already drew the edge from the planner. This keeps the graph from looking like a snake.
+    if (method === "multiAgentGoT" && opType === "generate" && node.phase === 2 && node.hop > 0) {
+      const parentNode = nodesById.get(pid);
+      if (parentNode && parentNode.op_type === "advance_subquestion") {
+        return; // Skip this edge
+      }
+    }
+    ensureEdge(pid, id, idx + 1);
   });
 }
 
