@@ -561,3 +561,8 @@ if __name__ == "__main__":
         logging.info("Spent %s out of %s budget.", spent, _bud)
     else:
         logging.info("Spent %s (无预算上限).", spent)
+
+    if args.realtime_vis and args.workers <= 1:
+        import time
+        logging.info("等待前端拉取最终可视化事件...")
+        time.sleep(3)
