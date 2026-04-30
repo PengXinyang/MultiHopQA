@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -9,28 +10,44 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "multi_hop_qa"))
 
-from graph_of_thoughts import operations
+controller_stub = types.ModuleType("graph_of_thoughts.controller")
+auto_goo_stub = types.ModuleType("graph_of_thoughts.auto_goo_designer")
+goo_builder_stub = types.ModuleType("graph_of_thoughts.goo_builder")
+
+
+def _unused(*args, **kwargs):
+    raise AssertionError("unexpected call")
+
+
+auto_goo_stub.requestGotGooDesign = _unused
+auto_goo_stub.saveDesignResult = _unused
+goo_builder_stub.loadGooDesignFromFile = _unused
+goo_builder_stub.buildGraphFromGooDesign = _unused
+sys.modules["graph_of_thoughts.controller"] = controller_stub
+sys.modules["graph_of_thoughts.auto_goo_designer"] = auto_goo_stub
+sys.modules["graph_of_thoughts.goo_builder"] = goo_builder_stub
+
 import utils
 
 
-class FailingOperation(operations.Operation):
-    operation_type = operations.OperationType.generate
+class FailingController:
+    def __init__(self, lm, graph, prompter, parser, problem_parameters, event_sink=None):
+        self.lm = lm
+        self.graph = types.SimpleNamespace(leaves=[])
 
-    def __init__(self):
-        super().__init__()
-        self.thoughts = []
-
-    def _execute(self, lm, prompter, parser, **kwargs):
+    def run(self):
         raise RuntimeError("controller failed")
 
-    def get_thoughts(self):
-        return self.thoughts
+    def output_graph(self, path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("[]")
 
 
 def failing_method():
-    graph = operations.GraphOfOperations()
-    graph.append_operation(FailingOperation())
-    return graph
+    return object()
+
+
+controller_stub.Controller = FailingController
 
 
 class DummyLM:
