@@ -284,11 +284,17 @@ def runSingleMethod(
         event_sink=event_sink,
     )
 
+    run_error = None
     try:
         executor.run()
     except Exception as e:
+        run_error = e
         logging.error(
-            "Exception in %s for item %s: %s", method.__name__, item.get("_id", ""), e
+            "Exception in %s for item %s: %s",
+            method.__name__,
+            item.get("_id", ""),
+            e,
+            exc_info=True,
         )
 
     # 保存结果
@@ -307,6 +313,9 @@ def runSingleMethod(
             json.dump(summary, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logging.warning("Failed to write summary json for %s: %s", method.__name__, e)
+
+    if run_error is not None:
+        raise run_error
 
     return getattr(lm, "cost", 0.0)
 
