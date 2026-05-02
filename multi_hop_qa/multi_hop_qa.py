@@ -17,6 +17,7 @@ import utils
 from graph_of_thoughts import language_models, operations
 from graph_of_thoughts.language_models.gemini_grouped_failover import (
     detect_gemini_parallel_num_groups,
+    gemini_parallel_groups_configured,
     parallel_gemini_groups_enabled,
 )
 from graph_of_thoughts.visualization import EventStore, start_realtime_server
@@ -311,7 +312,10 @@ def run(
 
         total = len(tasks)
         done = 0
-        use_pool_gemini = parallel_gemini_groups_enabled(config_lm_path)
+        use_pool_gemini = (
+            parallel_gemini_groups_enabled(config_lm_path)
+            and gemini_parallel_groups_configured(config_lm_path)
+        )
         ctx = mp.get_context("spawn")
         pool_kw: Dict[str, Any] = {"max_workers": pw, "mp_context": ctx}
         if use_pool_gemini:

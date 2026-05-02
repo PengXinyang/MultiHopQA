@@ -64,6 +64,22 @@ def _group_suffix_keys_for_prefix(cfg: Dict[str, Any], prefix: str) -> List[str]
     return [k for _, k in found]
 
 
+def _all_gemini_group_suffix_keys(cfg: Dict[str, Any]) -> List[str]:
+    """返回所有形如 ``gemini-...-{正整数}`` 的原生 Gemini 分组配置键。"""
+    pat = re.compile(r"^gemini-.+-(\d+)$")
+    found: List[tuple[str, int]] = []
+    for k in cfg.keys():
+        if not isinstance(k, str):
+            continue
+        if k.endswith("-gcli") or "-gcli-" in k:
+            continue
+        m = pat.match(k)
+        if m:
+            found.append((k, int(m.group(1))))
+    found.sort(key=lambda x: (x[0].rsplit("-", 1)[0], x[1]))
+    return [k for k, _ in found]
+
+
 def resolve_gemini_config_prefix(logical_name: str, cfg: Dict[str, Any]) -> str:
     """
     将角色/工厂里写的 logical_name 解析为分组用的 config 键前缀（不含 -1/-2）。
@@ -111,6 +127,12 @@ def parallel_gemini_groups_enabled(config_path: str) -> bool:
     if not isinstance(block, dict):
         return True
     return bool(block.get("assign_key_group_by_process", True))
+
+
+def gemini_parallel_groups_configured(config_path: str) -> bool:
+    """config 中是否实际存在原生 Gemini 分组键。"""
+    cfg = _load_full_config(config_path)
+    return bool(_all_gemini_group_suffix_keys(cfg))
 
 
 def detect_gemini_parallel_num_groups(config_path: str) -> int:
