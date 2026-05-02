@@ -13,8 +13,6 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Union
 
-from .gemini import Gemini
-
 # 逻辑名（如 model_id / 角色配置里写的名字）-> config 里分组条目前缀
 _DEFAULT_LOGICAL_TO_PREFIX: Dict[str, str] = {
     "gemini-2.5-flash": "gemini-2.5-flash",
@@ -62,6 +60,22 @@ def _group_suffix_keys_for_prefix(cfg: Dict[str, Any], prefix: str) -> List[str]
             found.append((int(m.group(1)), k))
     found.sort(key=lambda x: x[0])
     return [k for _, k in found]
+
+
+def _all_gemini_group_suffix_keys(cfg: Dict[str, Any]) -> List[str]:
+    """返回所有形如 ``gemini-...-{正整数}`` 的原生 Gemini 分组配置键。"""
+    pat = re.compile(r"^gemini-.+-(\d+)$")
+    found: List[tuple[str, int]] = []
+    for k in cfg.keys():
+        if not isinstance(k, str):
+            continue
+        if k.endswith("-gcli") or "-gcli-" in k:
+            continue
+        m = pat.match(k)
+        if m:
+            found.append((k, int(m.group(1))))
+    found.sort(key=lambda x: (x[0].rsplit("-", 1)[0], x[1]))
+    return [k for k, _ in found]
 
 
 def resolve_gemini_config_prefix(logical_name: str, cfg: Dict[str, Any]) -> str:
@@ -113,6 +127,12 @@ def parallel_gemini_groups_enabled(config_path: str) -> bool:
     return bool(block.get("assign_key_group_by_process", True))
 
 
+def gemini_parallel_groups_configured(config_path: str) -> bool:
+    """config 中是否实际存在原生 Gemini 分组键。"""
+    cfg = _load_full_config(config_path)
+    return bool(_all_gemini_group_suffix_keys(cfg))
+
+
 def detect_gemini_parallel_num_groups(config_path: str) -> int:
     """根据 config 中 gemini-2.5-flash-* 等条目推断组数；无法推断时返回 1。"""
     cfg = _load_full_config(config_path)
@@ -152,7 +172,9 @@ class GeminiGroupedFailover:
             full, self.logical_model_name, preferred_group_0based
         )
         self._ordered_keys: List[str] = list(ordered_keys)
-        self._backends: List[Gemini] = []
+        self._backends: List[Any] = []
+        from .gemini import Gemini
+
         for k in self._ordered_keys:
             self._backends.append(
                 Gemini(
