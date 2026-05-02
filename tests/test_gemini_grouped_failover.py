@@ -1,10 +1,20 @@
 import json
+import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
 
-from graph_of_thoughts.language_models.gemini_grouped_failover import (
-    gemini_parallel_groups_configured,
+MODULE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "graph_of_thoughts"
+    / "language_models"
+    / "gemini_grouped_failover.py"
+)
+spec = importlib.util.spec_from_file_location("gemini_grouped_failover", MODULE_PATH)
+gemini_grouped_failover = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gemini_grouped_failover)
+gemini_parallel_groups_configured = (
+    gemini_grouped_failover.gemini_parallel_groups_configured
 )
 
 

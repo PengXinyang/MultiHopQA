@@ -13,8 +13,6 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Union
 
-from .gemini import Gemini
-
 # 逻辑名（如 model_id / 角色配置里写的名字）-> config 里分组条目前缀
 _DEFAULT_LOGICAL_TO_PREFIX: Dict[str, str] = {
     "gemini-2.5-flash": "gemini-2.5-flash",
@@ -174,7 +172,9 @@ class GeminiGroupedFailover:
             full, self.logical_model_name, preferred_group_0based
         )
         self._ordered_keys: List[str] = list(ordered_keys)
-        self._backends: List[Gemini] = []
+        self._backends: List[Any] = []
+        from .gemini import Gemini
+
         for k in self._ordered_keys:
             self._backends.append(
                 Gemini(
