@@ -179,7 +179,7 @@ class LightweightModelGroup(RotatingLanguageModel):
         "deepseek-v4-flash",
         "gemini-2.5-flash-gcli",
         "gemini-2.5-flash",
-        "gemini-3-flash",
+        # "gemini-3-flash",
     ]
 
     def __init__(
@@ -219,7 +219,7 @@ class HeavyModelGroup(RotatingLanguageModel):
         "deepseek-v4-pro",
         "gemini-2.5-pro-gcli",
         "gemini-2.5-pro",
-        "gemini-3-pro",
+        # "gemini-3-pro",
     ]
 
     def __init__(

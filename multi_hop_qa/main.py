@@ -26,13 +26,13 @@ from multi_hop_qa.data.multi_hop_prompter import MultiHopPrompter
 
 
 def run_serial_methods(
-    selected: List[Dict[str, Any]],
-    methods: List[Callable[..., operations.GraphOfOperations]],
-    budget: float,
-    role_model_names: dict[str, str],
-    config_lm_path: str,
-    run_dir: str,
-    vis_store: Optional[EventStore] = None,
+        selected: List[Dict[str, Any]],
+        methods: List[Callable[..., operations.GraphOfOperations]],
+        budget: float,
+        role_model_names: dict[str, str],
+        config_lm_path: str,
+        run_dir: str,
+        vis_store: Optional[EventStore] = None,
 ) -> float:
     """串行运行样本与方法；保留实时可视化事件推送。"""
     spent = 0.0
@@ -411,11 +411,11 @@ def default_role_model_names() -> Dict[str, str]:
 
 
 def print_run_config(
-    args: argparse.Namespace,
-    role_model_names: Dict[str, str],
-    samples: Any,
-    len_data: int,
-    seed: int,
+        args: argparse.Namespace,
+        role_model_names: Dict[str, str],
+        samples: Any,
+        len_data: int,
+        seed: int,
 ) -> None:
     print(f"数据集: {args.dataset}")
     print(f"语言模型: {role_model_names}")
@@ -450,6 +450,8 @@ def start_realtime_vis(args: argparse.Namespace) -> Optional[EventStore]:
 
 
 def main() -> None:
+    os.environ["HTTP_PROXY"] = "http://127.0.0.1:7890"
+    os.environ["HTTPS_PROXY"] = "http://127.0.0.1:7890"
     # 默认入口：未指定 num_samples / sample_id 时跑全量；指定 num_samples 则随机抽样
     # 支持的数据集：hotpotqa, musique_ans, musique_full
     parser = build_arg_parser()

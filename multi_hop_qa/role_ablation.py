@@ -149,6 +149,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    os.environ["HTTP_PROXY"] = "http://127.0.0.1:7890"
+    os.environ["HTTPS_PROXY"] = "http://127.0.0.1:7890"
     parser = build_arg_parser()
     args = parser.parse_args()
 
