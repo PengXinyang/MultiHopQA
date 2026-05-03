@@ -150,18 +150,20 @@ def collect_cross_experiment_summary(
     return rows
 
 
-def print_cross_experiment_table(rows: List[Dict[str, Any]]) -> None:
-    """Pretty-print the ablation summary table."""
-    print("\n" + "=" * 110)
-    print(" " * 20 + "消 融 实 验 汇 总 表")
-    print("=" * 110)
+def format_cross_experiment_table(rows: List[Dict[str, Any]]) -> str:
+    """与原先终端表格相同的文本格式，用于写入文件。"""
+    lines: List[str] = []
+    lines.append("")
+    lines.append("=" * 110)
+    lines.append(" " * 20 + "消 融 实 验 汇 总 表")
+    lines.append("=" * 110)
     hdr = (
         f"{'编号':<18} {'消融条件':<18} {'N':>4} "
         f"{'正确率':>8} {'EM率':>8} {'平均F1':>8} "
         f"{'总费用$':>10} {'题均费用$':>10}"
     )
-    print(hdr)
-    print("-" * 110)
+    lines.append(hdr)
+    lines.append("-" * 110)
     for r in rows:
         n = r.get("N", "—")
         cr = f"{r['correct_rate']:.4f}" if "correct_rate" in r else "—"
@@ -169,12 +171,19 @@ def print_cross_experiment_table(rows: List[Dict[str, Any]]) -> None:
         f1 = f"{r['mean_F1']:.4f}" if "mean_F1" in r else "—"
         tc = f"{r['total_cost']:.4f}" if "total_cost" in r else "—"
         mc = f"{r['mean_cost']:.4f}" if "mean_cost" in r else "—"
-        print(
-            f"{r['label']:<18} {r['name']:<18} {n:>4} "
+        lines.append(
+            f"{r['label']:<18} {r['name']:<18} {str(n):>4} "
             f"{cr:>8} {em:>8} {f1:>8} "
             f"{tc:>10} {mc:>10}"
         )
-    print("=" * 110)
+    lines.append("=" * 110)
+    return "\n".join(lines)
+
+
+def save_cross_experiment_table(rows: List[Dict[str, Any]], output_path: str) -> None:
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(format_cross_experiment_table(rows))
+    print(f"\n汇总表格已保存: {output_path}")
 
 
 def save_cross_experiment_json(
@@ -394,12 +403,11 @@ def main() -> None:
     print("#" * 110)
 
     rows = collect_cross_experiment_summary(completed)
-    print_cross_experiment_table(rows)
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    table_path = os.path.join(results_base, f"ablation_table_{args.dataset}_{stamp}.txt")
+    save_cross_experiment_table(rows, table_path)
 
-    summary_path = os.path.join(
-        results_base,
-        f"ablation_summary_{args.dataset}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-    )
+    summary_path = os.path.join(results_base, f"ablation_summary_{args.dataset}_{stamp}.json")
     save_cross_experiment_json(rows, summary_path)
 
 
