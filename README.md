@@ -26,11 +26,42 @@
 在项目根目录或本目录下执行（需已配置 `graph_of_thoughts/language_models/config.json` 及相应 API key）：
 
 ```bash
-# 跑消融实验（每个数据集抽60条）
-python "multi_hop_qa/role_ablation.py" --num_samples 60 --variant all --workers 4
-python "multi_hop_qa/role_ablation.py" --num_samples 60 --variant role_routed --workers 4
+# 跑整个消融实验
+## 全部 6 组实验，每组 30 题，4 进程并行
+python multi_hop_qa/run_all_ablations.py --num_samples 30 --workers 4
+
+## 只跑部分变体
+python multi_hop_qa/run_all_ablations.py --variants A1_no_backtrack,A0_full --num_samples 30 --workers 4
+
+## 指定单个数据集
+python multi_hop_qa/run_all_ablations.py --dataset hotpotqa --num_samples 50 --workers 2
+
+# 跑消融实验A1
+## 运行全部变体（无回溯 + 完整模型对照）
+python multi_hop_qa/backtrack_ablation.py --num_samples 30 --seed 42 --workers 4
+
+## 只运行无回溯消融
+python multi_hop_qa/backtrack_ablation.py --variant no_backtrack --num_samples 30 --seed 42 --workers 4
+
+## 只运行完整模型对照
+python multi_hop_qa/backtrack_ablation.py --variant full --num_samples 30 --seed 42 --workers 4
+
+# 跑消融实验A2（每个数据集抽60条）
+python "multi_hop_qa/role_ablation.py" --num_samples 30 --variant all --workers 4 --seed 42
+python "multi_hop_qa/role_ablation.py" --num_samples 30 --variant role_routed --workers 4 --seed 42
+
+# 跑消融实验A3
+## 运行全部三组（k=1 → k=3 → 完整模型）
+python multi_hop_qa/branch_ablation.py --dataset mixed --num_samples 30 --seed 42
+
+## 只运行 k=1（无分支探索消融）
+python multi_hop_qa/branch_ablation.py --variant branch_k1 --dataset mixed --num_samples 30
+
+## 只运行 k=3（扩展探索消融）
+python multi_hop_qa/branch_ablation.py --variant branch_k3 --dataset mixed --num_samples 30
+
 # 或指定语言模型名（需在 config.json 中存在）
-python "multi_hop_qa/main.py" --num_samples 60 --workers 4
+python "multi_hop_qa/main.py" --num_samples 60 --workers 4 --seed 42
 ```
 
 在脚本内可修改：

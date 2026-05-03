@@ -142,7 +142,7 @@ def _resolve_method_from_tag(
             return multiAgentGoT(
                 nh,
                 int(pg.get("got_branch_k", MAGOT_DEFAULTS["got_branch_k"])),
-                max(1, int(pg.get("got_critic_retries", MAGOT_DEFAULTS["got_critic_retries"]))),
+                int(pg.get("got_critic_retries", MAGOT_DEFAULTS["got_critic_retries"])),
             )
 
         factory.__name__ = "multiAgentGoT"
