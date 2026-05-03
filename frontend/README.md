@@ -19,7 +19,7 @@
 1) 启动后端实时服务（你现有的 python 入口带 `--realtime_vis` 即可），例如：
 
 ```bash
-python multi_hop_qa/multi_hop_qa.py --dataset musique_ans --num_samples 1 --realtime_vis --vis_host 127.0.0.1 --vis_port 8765
+python multi_hop_qa/main.py --dataset musique_ans --num_samples 1 --realtime_vis --vis_host 127.0.0.1 --vis_port 8765
 ```
 
 2) 启动前端

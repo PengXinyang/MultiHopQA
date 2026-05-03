@@ -26,11 +26,11 @@
 在项目根目录或本目录下执行（需已配置 `graph_of_thoughts/language_models/config.json` 及相应 API key）：
 
 ```bash
-# 使用默认 ChatGPT 配置，跑 5 个样本、4 种方法
-python -m examples.multi_hop_qa.multi_hop_qa
-
+# 跑消融实验（每个数据集抽60条）
+python "multi_hop_qa/role_ablation.py" --num_samples 60 --variant all --workers 4
+python "multi_hop_qa/role_ablation.py" --num_samples 60 --variant role_routed --workers 4
 # 或指定语言模型名（需在 config.json 中存在）
-python -m examples.multi_hop_qa.multi_hop_qa gemini-2.5-flash
+python "multi_hop_qa/main.py" --num_samples 60 --workers 4
 ```
 
 在脚本内可修改：

@@ -139,6 +139,38 @@ def run(
         data_ids = list(range(len(data)))
     selected = [data[i] for i in data_ids if i < len(data)]
 
+    return run_selected_items(
+        selected=selected,
+        methods=methods,
+        budget=budget,
+        role_model_names=role_model_names,
+        dataset=dataset,
+        data_path=data_path,
+        max_samples=max_samples,
+        data_ids=data_ids[:len(selected)],
+        vis_store=vis_store,
+        parallel_workers=parallel_workers,
+        run_label=run_label,
+        experiment_config=experiment_config,
+    )
+
+
+def run_selected_items(
+        selected: List[Dict[str, Any]],
+        methods: List[Callable[..., operations.GraphOfOperations]],
+        budget: float,
+        role_model_names: dict[str, str],
+        dataset: str,
+        data_path: Any = None,
+        max_samples: int = 100,
+        data_ids: Any = None,
+        vis_store: Optional[EventStore] = None,
+        parallel_workers: int = 1,
+        run_label: str = "",
+        experiment_config: Optional[Dict[str, Any]] = None,
+) -> float:
+    """Run already-selected items. Used by mixed-dataset experiments and normal runs."""
+
     if not math.isfinite(budget) or budget < 0:
         budget = float("inf")
 
@@ -157,7 +189,7 @@ def run(
     results_dir = os.path.join(os.path.dirname(__file__), "results")
     config_extra: Dict[str, Any] = {
         "data_path": data_path,
-        "data_ids": data_ids[:len(selected)],
+        "data_ids": data_ids,
         "budget": budget if math.isfinite(budget) else None,
         "budget_unlimited": not math.isfinite(budget),
         "max_samples": max_samples,
@@ -223,9 +255,9 @@ def sanitize_run_label(label: str) -> str:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="多跳问答 GoT 实验")
-    parser.add_argument("--dataset", type=str, default="hotpotqa",
-                        choices=["hotpotqa", "musique_ans", "musique_full"],
-                        help="数据集名称")
+    parser.add_argument("--dataset", type=str, default="mixed",
+                        choices=["mixed", "hotpotqa", "musique_ans", "musique_full"],
+                        help="数据集名称；默认 mixed 表示从 HotpotQA 和 MuSiQue 各抽 --num_samples 条")
     parser.add_argument(
         "--budget",
         type=float,
@@ -289,6 +321,10 @@ def handle_aggregate_only(aggregate_only: str) -> bool:
 
 def get_dataset_config() -> Dict[str, Dict[str, Any]]:
     return {
+        "mixed": {
+            "path": None,
+            "size": None,
+        },
         "hotpotqa": {
             "path": os.path.join(os.path.dirname(__file__), "..", "dataset", "hotpotQA",
                                  "hotpot_dev_distractor_v1.json"),
@@ -327,6 +363,39 @@ def select_sample_indices(args: argparse.Namespace, data_path: str, len_data: in
     return list(range(len_data))
 
 
+def load_mixed_selected_items(args: argparse.Namespace, configs: Dict[str, Dict[str, Any]]) -> tuple:
+    """
+    Default small benchmark: sample N HotpotQA items and N MuSiQue items, then merge them.
+
+    Returns (selected_items, mixed_data_ids, mixed_data_paths, max_samples_loaded).
+    """
+    if args.sample_id and args.sample_id.strip():
+        raise ValueError("--dataset mixed 不支持 --sample_id；请指定 --dataset hotpotqa 或 musique_ans。")
+    if args.num_samples is None:
+        raise ValueError("--dataset mixed 需要显式指定 --num_samples，表示每个数据集抽取多少条。")
+    if args.num_samples < 1:
+        raise ValueError("--num_samples 须为正整数")
+
+    selected: List[Dict[str, Any]] = []
+    data_ids: Dict[str, List[int]] = {}
+    data_paths: Dict[str, str] = {}
+    for dataset_name in ("hotpotqa", "musique_ans"):
+        cfg = configs[dataset_name]
+        data_path = cfg["path"]
+        len_data = int(cfg["size"])
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(f"数据集文件不存在: {data_path}")
+        ids = random.sample(range(len_data), min(args.num_samples, len_data))
+        data = utils.loadMultiHopData(data_path, max_samples=len_data)
+        for idx in ids:
+            item = dict(data[idx])
+            item["_source_dataset"] = dataset_name
+            selected.append(item)
+        data_ids[dataset_name] = ids
+        data_paths[dataset_name] = data_path
+    return selected, data_ids, data_paths, sum(int(configs[name]["size"]) for name in ("hotpotqa", "musique_ans"))
+
+
 def default_role_model_names() -> Dict[str, str]:
     # 角色模型分配（方案A：一个角色一个智能体/模型实例）
     # - "__lite__": 轻量模型轮换池（见 graph_of_thoughts.language_models.rotating）
@@ -344,19 +413,24 @@ def default_role_model_names() -> Dict[str, str]:
 def print_run_config(
     args: argparse.Namespace,
     role_model_names: Dict[str, str],
-    samples: List[int],
+    samples: Any,
     len_data: int,
     seed: int,
 ) -> None:
     print(f"数据集: {args.dataset}")
     print(f"语言模型: {role_model_names}")
-    if args.sample_id and args.sample_id.strip():
+    if args.dataset == "mixed" and isinstance(samples, dict):
+        total_selected = sum(len(v) for v in samples.values())
+        detail = ", ".join(f"{k}={len(v)}" for k, v in samples.items())
+        print(f"抽样: 混合数据集 {detail}，共 {total_selected} 条（seed={seed}）")
+    elif args.sample_id and args.sample_id.strip():
         print(f"抽样: 指定 sample_id={args.sample_id.strip()!r}，共 {len(samples)} 条索引")
     elif args.num_samples is not None:
         print(f"抽样: 随机 {len(samples)} / {len_data}（seed={seed}）")
     else:
         print(f"抽样: 全量 {len(samples)} 题")
-    print(f"样本数: {len(samples)}")
+    sample_count = sum(len(v) for v in samples.values()) if isinstance(samples, dict) else len(samples)
+    print(f"样本数: {sample_count}")
     print(
         f"预算: {'无上限' if not math.isfinite(args.budget) or args.budget < 0 else f'${args.budget}'}"
     )
@@ -384,14 +458,18 @@ def main() -> None:
     if handle_aggregate_only(args.aggregate_only):
         sys.exit(0)
 
-    config = get_dataset_config()[args.dataset]
-    data_path = config["path"]
-    len_data = config["size"]
-
     seed = int(args.seed) if args.seed is not None else int(time.time())
     random.seed(seed)
 
-    samples = select_sample_indices(args, data_path, len_data)
+    configs = get_dataset_config()
+    config = configs[args.dataset]
+    if args.dataset == "mixed":
+        selected_items, samples, data_path, len_data = load_mixed_selected_items(args, configs)
+    else:
+        data_path = config["path"]
+        len_data = config["size"]
+        samples = select_sample_indices(args, data_path, len_data)
+        selected_items = None
 
     #approaches = [cot, tot, got, multiAgentGoT]
     approaches = [multiAgentGoT]
@@ -401,17 +479,36 @@ def main() -> None:
     vis_store = start_realtime_vis(args)
 
     _bud = args.budget
-    spent = run(
-        samples,
-        approaches,
-        _bud,
-        role_model_names,
-        args.dataset,
-        data_path=data_path,
-        max_samples=len_data,
-        vis_store=vis_store,
-        parallel_workers=max(1, args.workers),
-    )
+    if args.dataset == "mixed":
+        spent = run_selected_items(
+            selected=selected_items,
+            methods=approaches,
+            budget=_bud,
+            role_model_names=role_model_names,
+            dataset=args.dataset,
+            data_path=data_path,
+            max_samples=len_data,
+            data_ids=samples,
+            vis_store=vis_store,
+            parallel_workers=max(1, args.workers),
+            experiment_config={
+                "mixed_dataset_components": ["hotpotqa", "musique_ans"],
+                "samples_per_dataset": args.num_samples,
+                "sample_seed": seed,
+            },
+        )
+    else:
+        spent = run(
+            samples,
+            approaches,
+            _bud,
+            role_model_names,
+            args.dataset,
+            data_path=data_path,
+            max_samples=len_data,
+            vis_store=vis_store,
+            parallel_workers=max(1, args.workers),
+        )
     if math.isfinite(_bud) and _bud >= 0:
         logging.info("Spent %s out of %s budget.", spent, _bud)
     else:

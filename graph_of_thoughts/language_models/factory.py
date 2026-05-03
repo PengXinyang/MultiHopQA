@@ -41,7 +41,6 @@ def build_language_model(
     lower = normalized.lower()
 
     if lower.endswith("-gcli"):
-        # print("使用 GCLI Gemini 代理模型")
         # 延迟导入，避免未安装/未使用时影响其它模型
         from graph_of_thoughts.language_models.gcli_gemini import GCLIGemini
         return GCLIGemini(
@@ -69,14 +68,12 @@ def build_language_model(
         )
     
     if lower.startswith("deepseek-"):
-        print("使用 DeepSeek 模型")
         return DeepSeek(
             config_path,
             model_name=normalized,
             cache=cache,
         )
 
-    print("使用 ChatGPT/OpenAI 兼容模型")
     return ChatGPT(
         config_path,
         model_name=normalized,

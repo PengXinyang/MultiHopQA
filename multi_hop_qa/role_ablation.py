@@ -15,12 +15,14 @@ if PROJECT_ROOT not in sys.path:
 
 from graph_of_thoughts import operations
 from multi_hop_qa.data.multi_hop_graphs import got, multiAgentGoT
-from multi_hop_qa.multi_hop_qa import (
+from multi_hop_qa.main import (
     default_role_model_names,
     get_dataset_config,
     handle_aggregate_only,
+    load_mixed_selected_items,
     print_run_config,
     run,
+    run_selected_items,
     select_sample_indices,
     start_realtime_vis,
 )
@@ -65,7 +67,8 @@ def role_ablation_variants(
         ),
     }
     if name == "all":
-        order = ["single_agent_got", "same_lite", "same_heavy", "role_routed"]
+        # order = ["single_agent_got", "same_lite", "same_heavy", "role_routed"]
+        order = ["same_lite", "same_heavy", "role_routed"]
         return [(key, *variants[key]) for key in order]
     methods, role_names = variants[name]
     return [(name, methods, role_names)]
@@ -76,9 +79,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dataset",
         type=str,
-        default="hotpotqa",
-        choices=["hotpotqa", "musique_ans", "musique_full"],
-        help="数据集名称",
+        default="mixed",
+        choices=["mixed", "hotpotqa", "musique_ans", "musique_full"],
+        help="数据集名称；默认 mixed 表示从 HotpotQA 和 MuSiQue 各抽 --num_samples 条",
     )
     parser.add_argument(
         "--budget",
@@ -152,13 +155,18 @@ def main() -> None:
     if handle_aggregate_only(args.aggregate_only):
         sys.exit(0)
 
-    config = get_dataset_config()[args.dataset]
-    data_path = config["path"]
-    len_data = config["size"]
+    configs = get_dataset_config()
+    config = configs[args.dataset]
 
     seed = int(args.seed)
     random.seed(seed)
-    samples = select_sample_indices(args, data_path, len_data)
+    if args.dataset == "mixed":
+        selected_items, samples, data_path, len_data = load_mixed_selected_items(args, configs)
+    else:
+        data_path = config["path"]
+        len_data = config["size"]
+        samples = select_sample_indices(args, data_path, len_data)
+        selected_items = None
 
     variants = role_ablation_variants(args.variant)
     _, _, first_role_model_names = variants[0]
@@ -184,23 +192,46 @@ def main() -> None:
         print(f"角色模型: {role_model_names}")
         print("=" * 80)
 
-        variant_spent = run(
-            samples,
-            methods,
-            remaining_budget,
-            role_model_names,
-            args.dataset,
-            data_path=data_path,
-            max_samples=len_data,
-            vis_store=vis_store,
-            parallel_workers=max(1, args.workers),
-            run_label=f"role_ablation_{variant_name}",
-            experiment_config={
-                "experiment_type": "role_ablation",
-                "role_ablation_variant": variant_name,
-                "sample_seed": seed,
-            },
-        )
+        experiment_config = {
+            "experiment_type": "role_ablation",
+            "role_ablation_variant": variant_name,
+            "sample_seed": seed,
+        }
+        if args.dataset == "mixed":
+            experiment_config.update(
+                {
+                    "mixed_dataset_components": ["hotpotqa", "musique_ans"],
+                    "samples_per_dataset": args.num_samples,
+                }
+            )
+            variant_spent = run_selected_items(
+                selected=selected_items,
+                methods=methods,
+                budget=remaining_budget,
+                role_model_names=role_model_names,
+                dataset=args.dataset,
+                data_path=data_path,
+                max_samples=len_data,
+                data_ids=samples,
+                vis_store=vis_store,
+                parallel_workers=max(1, args.workers),
+                run_label=f"role_ablation_{variant_name}",
+                experiment_config=experiment_config,
+            )
+        else:
+            variant_spent = run(
+                samples,
+                methods,
+                remaining_budget,
+                role_model_names,
+                args.dataset,
+                data_path=data_path,
+                max_samples=len_data,
+                vis_store=vis_store,
+                parallel_workers=max(1, args.workers),
+                run_label=f"role_ablation_{variant_name}",
+                experiment_config=experiment_config,
+            )
         spent += variant_spent
         if math.isfinite(remaining_budget):
             remaining_budget -= variant_spent
