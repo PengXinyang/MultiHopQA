@@ -95,24 +95,21 @@ class GCLIGemini(AbstractLanguageModel):
             return self.response_cache[query]
 
         if num_responses == 1:
-            response = self.chat([{"role": "user", "content": query}], num_responses)
+            response = self.chat([{"role": "user", "content": query}])
         else:
-            # 多响应请求：分批处理，带重试机制
+            # GCLI（OpenAI 兼容）常见限制：同一请求仅允许 n=1。
+            # 通过多次 n=1 调用模拟多样本，避免 400: n_limit_exceeded。
             response_list: List[ChatCompletion] = []
-            next_try = num_responses
+            remaining = num_responses
             total_num_attempts = num_responses
-            while num_responses > 0 and total_num_attempts > 0:
+            while remaining > 0 and total_num_attempts > 0:
                 try:
-                    assert next_try > 0
-                    res = self.chat([{"role": "user", "content": query}], next_try)
+                    res = self.chat([{"role": "user", "content": query}])
                     response_list.append(res)
-                    num_responses -= next_try
-                    next_try = min(num_responses, next_try)
+                    remaining -= 1
                 except Exception as e:
-                    # 失败时减半重试数量
-                    next_try = (next_try + 1) // 2
                     self.logger.warning(
-                        f"GCLIGemini 请求出错: {e}，使用 {next_try} 个样本重试"
+                        f"GCLIGemini 请求出错: {e}，稍后重试 (remaining={remaining})"
                     )
                     time.sleep(random.randint(1, 3))
                     total_num_attempts -= 1
@@ -128,9 +125,12 @@ class GCLIGemini(AbstractLanguageModel):
         """
         通过 GCLI 代理向 Gemini 模型发起一次 /v1/chat/completions 调用。
 
+        GCLI 侧多数 API Key 仅允许单次请求 ``n=1``；多样本由 ``query()`` 多次调用本方法模拟。
+        ``num_responses`` 参数仅为与其它 LM 类签名兼容，请求体中固定 ``n=1``。
+
         :param messages: 消息列表，每个消息是包含 role 和 content 的字典
         :type messages: List[Dict]
-        :param num_responses: 期望的响应数量，默认为 1
+        :param num_responses: 兼容签名，实际不使用
         :type num_responses: int
         :return: 模型的响应
         :rtype: ChatCompletion
@@ -140,7 +140,7 @@ class GCLIGemini(AbstractLanguageModel):
             messages=messages,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
-            n=num_responses,
+            n=1,
             stop=self.stop,
         )
 
