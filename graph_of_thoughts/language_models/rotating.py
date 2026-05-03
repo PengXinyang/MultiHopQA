@@ -25,6 +25,7 @@ class RotatingModelConfig:
     retries_per_model: int = 3
     cache: bool = True
     gemini_parallel_group_0based: Optional[int] = None
+    initial_model_offset: int = 0
 
 
 class RotatingLanguageModel:
@@ -42,6 +43,9 @@ class RotatingLanguageModel:
         self.model_names: List[str] = [m.strip() for m in (config.model_names or []) if str(m).strip()]
         if not self.model_names:
             raise ValueError("RotatingLanguageModel requires a non-empty model_names list")
+        if len(self.model_names) > 1:
+            off = int(config.initial_model_offset or 0) % len(self.model_names)
+            self.model_names = self.model_names[off:] + self.model_names[:off]
 
         self.retries_per_model = int(config.retries_per_model or 3)
         self.cache = bool(config.cache)
@@ -174,6 +178,8 @@ class LightweightModelGroup(RotatingLanguageModel):
 
     #: 并行且按进程分配 Gemini key 组时：每角色内为逻辑名，组内先 2.5-flash 再 3-flash，组间由 GeminiGroupedFailover 切换
     LITE_MODELS_PARALLEL: List[str] = [
+        "deepseek-v4-flash",
+        "gemini-2.5-flash-gcli",
         "gemini-2.5-flash",
         "gemini-3-flash",
     ]
@@ -184,6 +190,7 @@ class LightweightModelGroup(RotatingLanguageModel):
         cache: bool = True,
         retries_per_model: int = 3,
         gemini_parallel_group_0based: Optional[int] = None,
+        initial_model_offset: int = 0,
     ) -> None:
         names = (
             list(self.LITE_MODELS_PARALLEL)
@@ -197,6 +204,7 @@ class LightweightModelGroup(RotatingLanguageModel):
                 retries_per_model=retries_per_model,
                 cache=cache,
                 gemini_parallel_group_0based=gemini_parallel_group_0based,
+                initial_model_offset=initial_model_offset,
             ),
         )
 
@@ -210,6 +218,8 @@ class HeavyModelGroup(RotatingLanguageModel):
     """
 
     HEAVY_MODELS_PARALLEL: List[str] = [
+        "deepseek-v4-pro",
+        "gemini-2.5-pro-gcli",
         "gemini-2.5-pro",
         "gemini-3-pro",
     ]
@@ -221,6 +231,7 @@ class HeavyModelGroup(RotatingLanguageModel):
         retries_per_model: int = 3,
         model_names: Optional[Sequence[str]] = None,
         gemini_parallel_group_0based: Optional[int] = None,
+        initial_model_offset: int = 0,
     ) -> None:
         if model_names is None:
             if gemini_parallel_group_0based is not None:
@@ -243,6 +254,7 @@ class HeavyModelGroup(RotatingLanguageModel):
                 retries_per_model=retries_per_model,
                 cache=cache,
                 gemini_parallel_group_0based=gemini_parallel_group_0based,
+                initial_model_offset=initial_model_offset,
             ),
         )
 

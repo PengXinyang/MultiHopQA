@@ -21,6 +21,72 @@ from multi_hop_prompter import MultiHopPrompter
 # --- Run ---
 
 
+def run_serial_methods(
+    selected: List[Dict[str, Any]],
+    methods: List[Callable[..., operations.GraphOfOperations]],
+    budget: float,
+    role_model_names: dict[str, str],
+    config_lm_path: str,
+    run_dir: str,
+    vis_store: Optional[EventStore] = None,
+) -> float:
+    """串行运行样本与方法；保留实时可视化事件推送。"""
+    spent = 0.0
+    prompter = MultiHopPrompter()
+    parser = MultiHopParser()
+
+    for idx, item in enumerate(selected, start=1):
+        print(f"正在运行第 {idx}/{len(selected)} 个问题，_id={item.get('_id', '')}")
+        if math.isfinite(budget) and budget <= 0:
+            logging.error("Budget depleted, stopping.")
+            break
+
+        for method in methods:
+            print(f"  方法: {method.__name__}")
+            if math.isfinite(budget) and budget <= 0:
+                break
+
+            lm = make_lm_for_method(method, role_model_names, config_lm_path)
+            run_id = f"{method.__name__}:{item.get('_id', idx)}"
+            print(f"  run_id: {run_id}")
+
+            if vis_store is not None:
+                vis_store.publish(run_id, {
+                    "type": "run_meta",
+                    "run_id": run_id,
+                    "sample_id": str(item.get("_id", "")),
+                    "method": method.__name__,
+                    "question": item.get("question", ""),
+                })
+
+            def _event_sink(payload, _rid=run_id):
+                if vis_store is not None:
+                    vis_store.publish(_rid, payload)
+
+            cost = utils.runSingleMethod(
+                item=item,
+                method=method,
+                lm=lm,
+                prompter=prompter,
+                parser=parser,
+                run_dir=run_dir,
+                event_sink=_event_sink if vis_store is not None else None,
+            )
+            budget -= cost
+            spent += cost
+
+        n_chk = int(utils.DATASET_AGGREGATE_CHECKPOINT_EVERY)
+        if n_chk > 0 and idx % n_chk == 0:
+            utils.finalize_run_aggregate(
+                run_dir,
+                progress_completed_n=idx,
+                print_table=False,
+            )
+
+    utils.finalize_run_aggregate(run_dir)
+    return spent
+
+
 def run(
         data_ids: List[int],
         methods: List[Callable[..., operations.GraphOfOperations]],
@@ -105,10 +171,6 @@ def run(
     config_lm_path = utils.getLmConfigPath(os.path.dirname(__file__))
 
     # 6. 运行实验
-    spent = 0.0
-    prompter = MultiHopPrompter()
-    parser = MultiHopParser()
-
     if pw > 1:
         assert parallel_method_tags is not None
         if vis_store is not None:
@@ -123,56 +185,18 @@ def run(
             budget=budget,
         )
 
-    for idx, item in enumerate(selected, start=1):
-        print(f"正在运行第 {idx}/{len(selected)} 个问题，_id={item.get('_id', '')}")
-        if math.isfinite(budget) and budget <= 0:
-            logging.error("Budget depleted, stopping.")
-            break
-
-        for method in methods:
-            print(f"  方法: {method.__name__}")
-            if math.isfinite(budget) and budget <= 0:
-                break
-
-            lm = make_lm_for_method(method, role_model_names, config_lm_path)
-
-            # 执行单个方法
-            run_id = f"{method.__name__}:{item.get('_id', idx)}"
-            print(f"  run_id: {run_id}")
-            if vis_store is not None:
-                vis_store.publish(run_id, {
-                    "type": "run_meta",
-                    "run_id": run_id,
-                    "sample_id": str(item.get("_id", "")),
-                    "method": method.__name__,
-                    "question": item.get("question", ""),
-                })
-
-            def _event_sink(payload, _rid=run_id):
-                if vis_store is not None:
-                    vis_store.publish(_rid, payload)
-
-            cost = utils.runSingleMethod(item=item, method=method, lm=lm, prompter=prompter, parser=parser,
-                                         run_dir=run_dir, event_sink=_event_sink if vis_store is not None else None)
-
-            budget -= cost
-            spent += cost
-
-        n_chk = int(utils.DATASET_AGGREGATE_CHECKPOINT_EVERY)
-        if n_chk > 0 and idx % n_chk == 0:
-            utils.finalize_run_aggregate(
-                run_dir,
-                progress_completed_n=idx,
-                print_table=False,
-            )
-
-    utils.finalize_run_aggregate(run_dir)
-    return spent
+    return run_serial_methods(
+        selected=selected,
+        methods=methods,
+        budget=budget,
+        role_model_names=role_model_names,
+        config_lm_path=config_lm_path,
+        run_dir=run_dir,
+        vis_store=vis_store,
+    )
 
 
-if __name__ == "__main__":
-    # 默认入口：未指定 num_samples / sample_id 时跑全量；指定 num_samples 则随机抽样
-    # 支持的数据集：hotpotqa, musique_ans, musique_full
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="多跳问答 GoT 实验")
     parser.add_argument("--dataset", type=str, default="hotpotqa",
                         choices=["hotpotqa", "musique_ans", "musique_full"],
@@ -215,20 +239,25 @@ if __name__ == "__main__":
         metavar="RUN_DIR",
         help="不跑实验：仅扫描 *.summary.json，生成 dataset_aggregate_metrics.json、dataset_aggregate_table.json 并打印表后退出",
     )
-    args = parser.parse_args()
+    return parser
 
-    agg_path = (args.aggregate_only or "").strip()
-    if agg_path:
-        run_dir_abs = os.path.abspath(agg_path)
-        if not os.path.isdir(run_dir_abs):
-            print(f"目录不存在: {run_dir_abs}", file=sys.stderr)
-            sys.exit(1)
-        logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
-        utils.finalize_run_aggregate(run_dir_abs)
-        sys.exit(0)
 
-    # 数据集路径和大小映射
-    DATASET_CONFIG = {
+def handle_aggregate_only(aggregate_only: str) -> bool:
+    agg_path = (aggregate_only or "").strip()
+    if not agg_path:
+        return False
+
+    run_dir_abs = os.path.abspath(agg_path)
+    if not os.path.isdir(run_dir_abs):
+        print(f"目录不存在: {run_dir_abs}", file=sys.stderr)
+        sys.exit(1)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
+    utils.finalize_run_aggregate(run_dir_abs)
+    return True
+
+
+def get_dataset_config() -> Dict[str, Dict[str, Any]]:
+    return {
         "hotpotqa": {
             "path": os.path.join(os.path.dirname(__file__), "..", "dataset", "hotpotQA",
                                  "hotpot_dev_distractor_v1.json"),
@@ -244,16 +273,10 @@ if __name__ == "__main__":
         },
     }
 
-    config = DATASET_CONFIG[args.dataset]
-    data_path = config["path"]
-    len_data = config["size"]
 
+def select_sample_indices(args: argparse.Namespace, data_path: str, len_data: int) -> List[int]:
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"数据集文件不存在: {data_path}")
-
-    seed = int(time.time())
-    # seed = 42
-    random.seed(seed)
 
     if args.sample_id and args.sample_id.strip():
         target = args.sample_id.strip()
@@ -265,23 +288,20 @@ if __name__ == "__main__":
                 hits.append(i)
         if not hits:
             raise ValueError(f"未在数据集中找到 sample_id={target}")
-        samples = hits
+        return hits
     elif args.num_samples is not None:
         if args.num_samples < 1:
             raise ValueError("--num_samples 须为正整数")
-        samples = random.sample(range(len_data), min(args.num_samples, len_data))
-    else:
-        samples = list(range(len_data))
+        return random.sample(range(len_data), min(args.num_samples, len_data))
+    return list(range(len_data))
 
-    #approaches = [cot, tot, got, multiAgentGoT]
-    approaches = [multiAgentGoT]
 
+def default_role_model_names() -> Dict[str, str]:
     # 角色模型分配（方案A：一个角色一个智能体/模型实例）
-    # 角色模型分配
     # - "__lite__": 轻量模型轮换池（见 graph_of_thoughts.language_models.rotating）
     # - "__heavy__": 复杂模型轮换池（见 graph_of_thoughts.language_models.rotating）
     # - 其它字符串：单一模型（config.json 的 key）
-    role_model_names = {
+    return {
         "planner": "__heavy__",
         "retriever": "__lite__",
         "reasoner": "__heavy__",
@@ -289,6 +309,14 @@ if __name__ == "__main__":
         "default": "__lite__",
     }
 
+
+def print_run_config(
+    args: argparse.Namespace,
+    role_model_names: Dict[str, str],
+    samples: List[int],
+    len_data: int,
+    seed: int,
+) -> None:
     print(f"数据集: {args.dataset}")
     print(f"语言模型: {role_model_names}")
     if args.sample_id and args.sample_id.strip():
@@ -303,6 +331,8 @@ if __name__ == "__main__":
     )
     print(f"并行进程数: {max(1, args.workers)}")
 
+
+def start_realtime_vis(args: argparse.Namespace) -> Optional[EventStore]:
     vis_store = None
     if args.realtime_vis and max(1, args.workers) == 1:
         vis_store = EventStore()
@@ -311,6 +341,34 @@ if __name__ == "__main__":
         print("运行中的每个样本 run_id 形如: multiAgentGoT:<sample_id>")
     elif args.realtime_vis and args.workers > 1:
         print("已跳过 realtime_vis（与 --workers>1 不兼容）")
+    return vis_store
+
+
+def main() -> None:
+    # 默认入口：未指定 num_samples / sample_id 时跑全量；指定 num_samples 则随机抽样
+    # 支持的数据集：hotpotqa, musique_ans, musique_full
+    parser = build_arg_parser()
+    args = parser.parse_args()
+
+    if handle_aggregate_only(args.aggregate_only):
+        sys.exit(0)
+
+    config = get_dataset_config()[args.dataset]
+    data_path = config["path"]
+    len_data = config["size"]
+
+    seed = int(time.time())
+    # seed = 42
+    random.seed(seed)
+
+    samples = select_sample_indices(args, data_path, len_data)
+
+    #approaches = [cot, tot, got, multiAgentGoT]
+    approaches = [multiAgentGoT]
+    role_model_names = default_role_model_names()
+
+    print_run_config(args, role_model_names, samples, len_data, seed)
+    vis_store = start_realtime_vis(args)
 
     _bud = args.budget
     spent = run(
@@ -330,6 +388,9 @@ if __name__ == "__main__":
         logging.info("Spent %s (无预算上限).", spent)
 
     if args.realtime_vis and args.workers <= 1:
-        import time
         logging.info("等待前端拉取最终可视化事件...")
         time.sleep(3)
+
+
+if __name__ == "__main__":
+    main()

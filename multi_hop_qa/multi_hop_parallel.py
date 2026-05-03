@@ -29,23 +29,30 @@ MAGOT_DEFAULTS: Dict[str, int] = {
 }
 
 # 仅并行池 initializer 在子进程中递增；主进程保持 None
-_PARALLEL_GEMINI_SLOT_RAW: Optional[int] = None
+_PARALLEL_WORKER_SLOT_RAW: Optional[int] = None
 
 
-def _pool_init_gemini_slot(counter) -> None:
-    global _PARALLEL_GEMINI_SLOT_RAW
+def _pool_init_parallel_slot(counter) -> None:
+    global _PARALLEL_WORKER_SLOT_RAW
     with counter.get_lock():
         s = int(counter.value)
         counter.value = s + 1
-    _PARALLEL_GEMINI_SLOT_RAW = s
+    _PARALLEL_WORKER_SLOT_RAW = s
 
 
 def _effective_gemini_parallel_group(config_lm_path: str) -> Optional[int]:
     """子进程内：worker 序号对组数取模，得到 0..num_groups-1。"""
-    if _PARALLEL_GEMINI_SLOT_RAW is None:
+    if _PARALLEL_WORKER_SLOT_RAW is None or not parallel_gemini_groups_enabled(config_lm_path):
         return None
     n = detect_gemini_parallel_num_groups(config_lm_path)
-    return int(_PARALLEL_GEMINI_SLOT_RAW) % max(1, n)
+    return int(_PARALLEL_WORKER_SLOT_RAW) % max(1, n)
+
+
+def _effective_model_offset() -> int:
+    """让不同 worker 优先使用不同供应商，避免并行时全部从同一个模型开始。"""
+    if _PARALLEL_WORKER_SLOT_RAW is None:
+        return 0
+    return int(_PARALLEL_WORKER_SLOT_RAW)
 
 
 def make_lm_for_method(
@@ -55,6 +62,7 @@ def make_lm_for_method(
 ) -> Any:
     """按方法类型构造 LM：multiAgentGoT* 用多角色 RoleAwareLM，其余用 default 单模型。"""
     gp = _effective_gemini_parallel_group(config_lm_path)
+    model_offset = _effective_model_offset()
     if method.__name__.startswith("multiAgentGoT"):
         role_to_lm = {}
         for role, model_name in role_model_names.items():
@@ -64,6 +72,7 @@ def make_lm_for_method(
                     cache=True,
                     retries_per_model=3,
                     gemini_parallel_group_0based=gp,
+                    initial_model_offset=model_offset,
                 )
             elif model_name == "__heavy__":
                 role_to_lm[role] = language_models.HeavyModelGroup(
@@ -71,6 +80,7 @@ def make_lm_for_method(
                     cache=True,
                     retries_per_model=3,
                     gemini_parallel_group_0based=gp,
+                    initial_model_offset=model_offset,
                 )
             else:
                 role_to_lm[role] = language_models.build_language_model(
@@ -87,6 +97,7 @@ def make_lm_for_method(
             cache=True,
             retries_per_model=3,
             gemini_parallel_group_0based=gp,
+            initial_model_offset=model_offset,
         )
     if model_name == "__heavy__":
         return language_models.HeavyModelGroup(
@@ -94,6 +105,7 @@ def make_lm_for_method(
             cache=True,
             retries_per_model=3,
             gemini_parallel_group_0based=gp,
+            initial_model_offset=model_offset,
         )
     return language_models.build_language_model(
         config_lm_path,
@@ -222,12 +234,13 @@ def run_parallel_methods(
     spent = 0.0
     total = len(tasks)
     done = 0
-    use_pool_gemini = parallel_gemini_groups_enabled(config_lm_path)
     ctx = mp.get_context("spawn")
-    pool_kw: Dict[str, Any] = {"max_workers": parallel_workers, "mp_context": ctx}
-    if use_pool_gemini:
-        pool_kw["initializer"] = _pool_init_gemini_slot
-        pool_kw["initargs"] = (ctx.Value("i", 0),)
+    pool_kw: Dict[str, Any] = {
+        "max_workers": parallel_workers,
+        "mp_context": ctx,
+        "initializer": _pool_init_parallel_slot,
+        "initargs": (ctx.Value("i", 0),),
+    }
     ex = ProcessPoolExecutor(**pool_kw)
     try:
         futures = {ex.submit(_multi_hop_pool_worker, t): t for t in tasks}
