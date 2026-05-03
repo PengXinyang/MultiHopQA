@@ -23,7 +23,8 @@ class DeepSeek(AbstractLanguageModel):
     行为尽量与 ChatGPT 类保持一致，区别在于：
     - 使用 DeepSeek 的 API Key（环境变量 DEEPSEEK_API_KEY 或配置中的 api_key）
     - 使用 DeepSeek 的 base_url（默认 https://api.deepseek.com，可在配置里覆盖）
-    - model_id 默认为 DeepSeek 的模型名（例如 deepseek-chat）
+    - model_id 默认为 DeepSeek 的模型名（例如 deepseek-chat / deepseek-v4-pro）
+    - 可选开启思考模式（Thinking Mode），输出思维链
     """
 
     def __init__(
@@ -54,6 +55,17 @@ class DeepSeek(AbstractLanguageModel):
         self.temperature: float = self.config["temperature"]
         self.max_tokens: int = self.config["max_tokens"]
         self.stop: Union[str, List[str]] = self.config["stop"]
+
+        # 思考模式相关配置（全部可选，默认关闭）
+        # - thinking_enabled: 是否启用思考模式
+        # - reasoning_effort: 思考强度（"high" / "max"）；
+        #   根据官方文档，"low" / "medium" 会被映射为 "high"，"xhigh" 会被映射为 "max"
+        # - include_reasoning_in_response: 是否将思维链拼到最终回答前返回
+        self.thinking_enabled: bool = bool(self.config.get("thinking_enabled", False))
+        self.reasoning_effort: str = self.config.get("reasoning_effort", "")
+        self.include_reasoning_in_response: bool = bool(
+            self.config.get("include_reasoning_in_response", False)
+        )
 
         # DeepSeek 不需要 organization 字段，预留保持结构一致
         self.organization: str = self.config.get("organization", "")
@@ -98,7 +110,7 @@ class DeepSeek(AbstractLanguageModel):
             response = self.chat([{"role": "user", "content": query}], 1)
         else:
             # DeepSeek(OpenAI-compatible) 端点常见限制：仅支持 n=1。
-            # 因此这里通过多次 n=1 的调用来“模拟”多样本，避免 400: Invalid n value。
+            # 因此这里通过多次 n=1 的调用来"模拟"多样本，避免 400: Invalid n value。
             response = []
             total_num_attempts = num_responses
             remaining = num_responses
@@ -125,6 +137,8 @@ class DeepSeek(AbstractLanguageModel):
         发送多轮对话消息给 DeepSeek 模型。
 
         使用与 OpenAI 相同的聊天补全接口，只是通过 base_url 指向 DeepSeek。
+        若配置启用了思考模式，会自动附加 extra_body={"thinking": {"type": "enabled"}}
+        以及可选的 reasoning_effort 参数。
 
         :param messages: 消息列表，每个消息是包含 role 和 content 的字典
         :type messages: List[Dict]
@@ -133,16 +147,31 @@ class DeepSeek(AbstractLanguageModel):
         :return: DeepSeek 模型的响应
         :rtype: ChatCompletion
         """
-        # OpenAI-compatible 端点常见限制：n 仅支持 1；max_tokens 上限通常为 8192。
-        safe_max_tokens = min(int(self.max_tokens), 8192)
-        response = self.client.chat.completions.create(
-            model=self.model_id,
-            messages=messages,
-            temperature=self.temperature,
-            max_tokens=safe_max_tokens,
-            n=1,
-            stop=self.stop,
-        )
+        # OpenAI-compatible 端点常见限制：n 仅支持 1。
+        # 非思考模式下 max_tokens 上限通常为 8192；思考模式下可更高（由模型决定），
+        # 因此只在非思考模式下对 max_tokens 做封顶，避免误伤。
+        safe_max_tokens = int(self.max_tokens)
+        if not self.thinking_enabled:
+            safe_max_tokens = min(safe_max_tokens, 8192)
+
+        create_kwargs: Dict = {
+            "model": self.model_id,
+            "messages": messages,
+            "max_tokens": safe_max_tokens,
+            "n": 1,
+            "stop": self.stop,
+        }
+
+        if self.thinking_enabled:
+            # 思考模式下 temperature / top_p / presence_penalty / frequency_penalty
+            # 不生效，这里显式不传，避免误导。
+            create_kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            if self.reasoning_effort:
+                create_kwargs["reasoning_effort"] = self.reasoning_effort
+        else:
+            create_kwargs["temperature"] = self.temperature
+
+        response = self.client.chat.completions.create(**create_kwargs)
 
         # 统计 token 用量与费用
         self.prompt_tokens += response.usage.prompt_tokens
@@ -166,6 +195,10 @@ class DeepSeek(AbstractLanguageModel):
         """
         从 DeepSeek 的 ChatCompletion（或其列表）中提取纯文本回复。
 
+        若开启了思考模式，并且配置 include_reasoning_in_response=true，
+        则会把思维链（reasoning_content）以 ``<think>...</think>`` 的形式
+        拼接在最终答案之前一并返回；否则只返回 content。
+
         :param query_response: DeepSeek 模型的响应
         :type query_response: Union[List[ChatCompletion], ChatCompletion]
         :return: 响应文本列表
@@ -174,8 +207,17 @@ class DeepSeek(AbstractLanguageModel):
         # typing.List is not valid for isinstance(); use built-in list.
         if not isinstance(query_response, list):
             query_response = [query_response]
-        return [
-            choice.message.content
-            for response in query_response
-            for choice in response.choices
-        ]
+
+        texts: List[str] = []
+        for response in query_response:
+            for choice in response.choices:
+                content = choice.message.content or ""
+                # 思考模式下，OpenAI SDK 会把 reasoning_content 透传到 message 上
+                reasoning_content = getattr(choice.message, "reasoning_content", None)
+                if self.include_reasoning_in_response and reasoning_content:
+                    texts.append(
+                        f"<think>\n{reasoning_content}\n</think>\n{content}"
+                    )
+                else:
+                    texts.append(content)
+        return texts

@@ -164,9 +164,9 @@ class LightweightModelGroup(RotatingLanguageModel):
 
     LITE_MODELS: List[str] = [
         #"chatgpt",  # gpt-3.5-turbo
-        #"deepseek-v3",
+        "deepseek-v4-flash",
         "gemini-2.5-flash-gcli",
-        # "gemini-2.5-flash-1",
+        "gemini-2.5-flash-1",
         # "gemini-2.5-flash-2",
         # "gemini-3-flash-1",
         # "gemini-3-flash-2",
@@ -228,10 +228,10 @@ class HeavyModelGroup(RotatingLanguageModel):
             else:
                 model_names = [
                     #"chatgpt4",
-                    #"deepseek-r1",
+                    "deepseek-v4-pro",
                     "gemini-2.5-pro-gcli",
                     #"gemini-3-pro-gcli",
-                    # "gemini-2.5-pro-1",
+                    "gemini-2.5-pro-1",
                     # "gemini-2.5-pro-2",
                     # "gemini-3-pro-1",
                     # "gemini-3-pro-2",
