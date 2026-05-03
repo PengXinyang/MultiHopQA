@@ -6,16 +6,8 @@ import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import score
-from data_loader import loadDataset, DatasetType
+from multi_hop_qa.data.data_loader import loadDataset, DatasetType
 from graph_of_thoughts import controller
-from graph_of_thoughts.auto_goo_designer import (
-    requestGotGooDesign,
-    saveDesignResult,
-)
-from graph_of_thoughts.goo_builder import (
-    loadGooDesignFromFile,
-    buildGraphFromGooDesign,
-)
 
 
 # --- 数据加载与上下文格式化 ---

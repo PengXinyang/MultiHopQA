@@ -15,9 +15,9 @@ from graph_of_thoughts.language_models.gemini_grouped_failover import (
     detect_gemini_parallel_num_groups,
     parallel_gemini_groups_enabled,
 )
-from multi_hop_graphs import io, cot, tot, got, multiAgentGoT
-from multi_hop_parser import MultiHopParser
-from multi_hop_prompter import MultiHopPrompter
+from multi_hop_qa.data.multi_hop_graphs import io, cot, tot, got, multiAgentGoT
+from multi_hop_qa.data.multi_hop_parser import MultiHopParser
+from multi_hop_qa.data.multi_hop_prompter import MultiHopPrompter
 from role_aware_lm import RoleAwareLM
 
 

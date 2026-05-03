@@ -9,13 +9,17 @@ import sys
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import utils
 from graph_of_thoughts import operations
 from graph_of_thoughts.visualization import EventStore, start_realtime_server
-from multi_hop_graphs import io, cot, tot, got, multiAgentGoT
+from multi_hop_qa.data.multi_hop_graphs import multiAgentGoT
 from multi_hop_parallel import make_lm_for_method, method_to_parallel_tag, run_parallel_methods
-from multi_hop_parser import MultiHopParser
-from multi_hop_prompter import MultiHopPrompter
+from multi_hop_qa.data.multi_hop_parser import MultiHopParser
+from multi_hop_qa.data.multi_hop_prompter import MultiHopPrompter
 
 
 # --- Run ---
@@ -97,6 +101,8 @@ def run(
         max_samples: int = 100,
         vis_store: Optional[EventStore] = None,
         parallel_workers: int = 1,
+        run_label: str = "",
+        experiment_config: Optional[Dict[str, Any]] = None,
 ) -> float:
     """
     加载多跳问答数据集（HotpotQA / MuSiQue），对指定样本和指定方法运行 GoT 框架，
@@ -159,10 +165,18 @@ def run(
     }
     if parallel_method_tags is not None:
         config_extra["parallel_method_tags"] = parallel_method_tags
+    if run_label:
+        config_extra["run_label"] = run_label
+    if experiment_config:
+        config_extra.update(experiment_config)
+
+    lm_name = role_model_names["default"]
+    if run_label:
+        lm_name = f"{lm_name}_{sanitize_run_label(run_label)}"
     run_dir = utils.setupRunDirectory(
         dataset,
         results_base_dir=results_dir,
-        lm_name=role_model_names["default"],
+        lm_name=lm_name,
         methods=methods,
         config_extra=config_extra,
     )
@@ -196,6 +210,17 @@ def run(
     )
 
 
+def sanitize_run_label(label: str) -> str:
+    """Convert an experiment label into a filesystem-friendly suffix."""
+    keep = []
+    for ch in str(label or "").strip():
+        if ch.isalnum() or ch in ("-", "_"):
+            keep.append(ch)
+        else:
+            keep.append("_")
+    return "".join(keep).strip("_")
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="多跳问答 GoT 实验")
     parser.add_argument("--dataset", type=str, default="hotpotqa",
@@ -213,6 +238,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help="随机抽取 N 道题；不设且未指定 --sample_id 时跑完整数据集",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="随机抽样种子；不指定时使用当前时间。例如 --seed 42",
     )
     parser.add_argument("--realtime_vis", action="store_true",
                         help="开启实时推理图可视化服务")
@@ -357,8 +388,7 @@ def main() -> None:
     data_path = config["path"]
     len_data = config["size"]
 
-    seed = int(time.time())
-    # seed = 42
+    seed = int(args.seed) if args.seed is not None else int(time.time())
     random.seed(seed)
 
     samples = select_sample_indices(args, data_path, len_data)
