@@ -48,11 +48,11 @@ def _effective_gemini_parallel_group(config_lm_path: str) -> Optional[int]:
     return int(_PARALLEL_WORKER_SLOT_RAW) % max(1, n)
 
 
-def _effective_model_offset() -> int:
-    """让不同 worker 优先使用不同供应商，避免并行时全部从同一个模型开始。"""
-    if _PARALLEL_WORKER_SLOT_RAW is None:
-        return 0
-    return int(_PARALLEL_WORKER_SLOT_RAW)
+# def _effective_model_offset() -> int:
+#     """让不同 worker 优先使用不同供应商，避免并行时全部从同一个模型开始。"""
+#     if _PARALLEL_WORKER_SLOT_RAW is None:
+#         return 0
+#     return int(_PARALLEL_WORKER_SLOT_RAW)
 
 
 def make_lm_for_method(
@@ -62,7 +62,8 @@ def make_lm_for_method(
 ) -> Any:
     """按方法类型构造 LM：multiAgentGoT* 用多角色 RoleAwareLM，其余用 default 单模型。"""
     gp = _effective_gemini_parallel_group(config_lm_path)
-    model_offset = _effective_model_offset()
+    # model_offset = _effective_model_offset()
+    model_offset = 0
     if method.__name__.startswith("multiAgentGoT"):
         role_to_lm = {}
         for role, model_name in role_model_names.items():

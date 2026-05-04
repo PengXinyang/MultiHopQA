@@ -58,12 +58,12 @@ python multi_hop_qa/backtrack_ablation.py --variant no_backtrack --num_samples 3
 python multi_hop_qa/backtrack_ablation.py --variant full --num_samples 30 --seed 42 --workers 4
 
 # 跑消融实验A2（每个数据集抽60条）
-python "multi_hop_qa/role_ablation.py" --num_samples 30 --variant all --workers 4 --seed 42
+python "multi_hop_qa/role_ablation.py" --num_samples 60 --variant all --workers 4 --seed 42
 python "multi_hop_qa/role_ablation.py" --num_samples 60 --variant role_routed --workers 4 --seed 42
 
 # 跑消融实验A3
 ## 运行全部三组（k=1 → k=3 → 完整模型）
-python multi_hop_qa/branch_ablation.py --dataset mixed --num_samples 30 --seed 42
+python multi_hop_qa/branch_ablation.py --dataset mixed --num_samples 60 --seed 42
 
 ## 只运行 k=1（无分支探索消融）
 python multi_hop_qa/branch_ablation.py --variant branch_k1 --dataset mixed --num_samples 60 --seed 42
