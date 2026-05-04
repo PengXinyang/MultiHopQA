@@ -187,7 +187,9 @@ def main() -> None:
         k_value = BRANCH_K_LABELS[variant_name]
         print("\n" + "=" * 80)
         print(f"开始消融变体: {variant_name}")
-        print(f"方法: {[getattr(m, '__name__', m.func.__name__) for m in methods]}")
+        print(
+            f"方法: {[getattr(m, '__name__', None) or getattr(getattr(m, 'func', None), '__name__', '?') for m in methods]}"
+        )
         print(f"local_branch_k: {k_value}" + (" (无剪枝)" if k_value == 1 else f" ({'默认' if k_value == 2 else '扩展探索'})"))
         print(f"角色模型: {role_model_names}")
         print("=" * 80)

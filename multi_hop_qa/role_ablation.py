@@ -68,7 +68,7 @@ def role_ablation_variants(
     }
     if name == "all":
         # order = ["single_agent_got", "same_lite", "same_heavy", "role_routed"]
-        order = ["same_lite", "same_heavy", "role_routed"]
+        order = ["same_lite", "same_heavy"]
         return [(key, *variants[key]) for key in order]
     methods, role_names = variants[name]
     return [(name, methods, role_names)]

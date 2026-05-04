@@ -26,6 +26,17 @@
 在项目根目录或本目录下执行（需已配置 `graph_of_thoughts/language_models/config.json` 及相应 API key）：
 
 ```bash
+# tmux挂机运行
+cd ~/MultiHopQA   # 先进入仓库根目录
+
+tmux new -s ablation
+python multi_hop_qa/run_all_ablations.py --num_samples 60 --workers 4 --seed 42
+
+在 tmux 里：按 Ctrl+B 松开后按 D 分离会话，即可关掉 Windows 里的 SSH，程序继续跑。
+
+# 下次登录后
+tmux attach -t ablation
+
 # 跑整个消融实验
 ## 全部 6 组实验，每组 30 题，4 进程并行
 python multi_hop_qa/run_all_ablations.py --num_samples 30 --workers 4
@@ -48,17 +59,17 @@ python multi_hop_qa/backtrack_ablation.py --variant full --num_samples 30 --seed
 
 # 跑消融实验A2（每个数据集抽60条）
 python "multi_hop_qa/role_ablation.py" --num_samples 30 --variant all --workers 4 --seed 42
-python "multi_hop_qa/role_ablation.py" --num_samples 30 --variant role_routed --workers 4 --seed 42
+python "multi_hop_qa/role_ablation.py" --num_samples 60 --variant role_routed --workers 4 --seed 42
 
 # 跑消融实验A3
 ## 运行全部三组（k=1 → k=3 → 完整模型）
 python multi_hop_qa/branch_ablation.py --dataset mixed --num_samples 30 --seed 42
 
 ## 只运行 k=1（无分支探索消融）
-python multi_hop_qa/branch_ablation.py --variant branch_k1 --dataset mixed --num_samples 30
+python multi_hop_qa/branch_ablation.py --variant branch_k1 --dataset mixed --num_samples 60 --seed 42
 
 ## 只运行 k=3（扩展探索消融）
-python multi_hop_qa/branch_ablation.py --variant branch_k3 --dataset mixed --num_samples 30
+python multi_hop_qa/branch_ablation.py --variant branch_k3 --dataset mixed --num_samples 60 --seed 42
 
 # 或指定语言模型名（需在 config.json 中存在）
 python "multi_hop_qa/main.py" --num_samples 60 --workers 4 --seed 42

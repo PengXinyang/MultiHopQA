@@ -171,7 +171,9 @@ def main() -> None:
 
         print("\n" + "=" * 80)
         print(f"开始消融变体: {variant_name}")
-        print(f"方法: {[getattr(m, '__name__', m.func.__name__) for m in methods]}")
+        print(
+            f"方法: {[getattr(m, '__name__', None) or getattr(getattr(m, 'func', None), '__name__', '?') for m in methods]}"
+        )
         print(f"critic_max_retries: {'0 (无回溯)' if variant_name == 'no_backtrack' else '3 (默认)'}")
         print(f"角色模型: {role_model_names}")
         print("=" * 80)

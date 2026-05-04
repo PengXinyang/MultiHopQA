@@ -57,6 +57,22 @@ def _named_partial(func, **kwargs):
     return p
 
 
+def _method_label(method: Callable[..., Any]) -> str:
+    """
+    日志中打印图工厂名称。
+
+    不能用 ``getattr(m, '__name__', m.func.__name__)``：第三个参数会先被求值，
+    普通函数没有 ``.func``，会在进入 getattr 之前就报错。
+    """
+    name = getattr(method, "__name__", None)
+    if isinstance(name, str) and name:
+        return name
+    inner = getattr(method, "func", None)
+    if inner is not None:
+        return getattr(inner, "__name__", type(method).__name__)
+    return type(method).__name__
+
+
 def build_all_variants() -> List[Tuple[str, str, List[Callable], Dict[str, str], Dict[str, int]]]:
     """
     Returns list of (label, display_name, methods, role_model_names, magot_overrides).
@@ -323,7 +339,7 @@ def main() -> None:
 
         print("\n" + "=" * 80)
         print(f"▶ [{label}] {display_name}")
-        print(f"  方法: {[getattr(m, '__name__', m.func.__name__) for m in methods]}")
+        print(f"  方法: {[_method_label(m) for m in methods]}")
         print(f"  角色模型: {role_model_names}")
         if magot_overrides:
             print(f"  并行参数覆盖: {magot_overrides}")
