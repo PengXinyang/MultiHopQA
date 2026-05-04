@@ -16,7 +16,7 @@ if PROJECT_ROOT not in sys.path:
 import utils
 from graph_of_thoughts import operations
 from graph_of_thoughts.visualization import EventStore, start_realtime_server
-from multi_hop_qa.data.multi_hop_graphs import multiAgentGoT
+from multi_hop_qa.data.multi_hop_graphs import multiAgentGoT, cot, tot, got
 from multi_hop_parallel import make_lm_for_method, method_to_parallel_tag, run_parallel_methods
 from multi_hop_qa.data.multi_hop_parser import MultiHopParser
 from multi_hop_qa.data.multi_hop_prompter import MultiHopPrompter
