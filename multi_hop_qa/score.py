@@ -6,6 +6,54 @@ from typing import Dict, List
 
 # --- 答案归一化与 F1 计算（对齐 Hotpot 官方评测） ---
 
+# EM / token-F1 比对时在 normalizeAnswer 之后额外去掉的「虚词」整词（全小写集合）。
+# 不剔除 and/or 等连词，避免破坏 “A and B” 类短语；含数字的 token 永远保留。
+_FUNCTION_WORD_TOKENS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "of",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "by",
+        "with",
+        "from",
+        "as",
+        "into",
+        "onto",
+        "upon",
+        "about",
+        "over",
+        "under",
+        "above",
+        "below",
+        "between",
+        "among",
+        "through",
+        "during",
+        "before",
+        "after",
+        "since",
+        "until",
+        "without",
+        "within",
+        "across",
+        "against",
+        "towards",
+        "around",
+        "behind",
+        "near",
+        "beyond",
+        "via",
+        "per",
+        "than",
+    }
+)
+
 
 def normalizeAnswer(s: str) -> str:
     def removeArticles(text):
@@ -24,10 +72,33 @@ def normalizeAnswer(s: str) -> str:
     return lower(removePunc(whiteSpaceFix(removeArticles(s))))
 
 
+def normalizeAnswerForMatch(s: str) -> str:
+    """
+    用于 EM / F1 字符串比对的归一化：在 Hotpot 风格 normalizeAnswer 基础上，
+    去掉作为独立词出现的冠词、介词等虚词，只保留主要语义片段。
+    若剔除后为空串，则回退为 normalizeAnswer(s)，避免误判。
+    """
+    base = normalizeAnswer(s)
+    if not base:
+        return ""
+    toks = base.split()
+    kept: List[str] = []
+    for t in toks:
+        if re.search(r"\d", t):
+            kept.append(t)
+            continue
+        if t in _FUNCTION_WORD_TOKENS:
+            continue
+        kept.append(t)
+    if not kept:
+        return base
+    return " ".join(kept)
+
+
 def singleF1(prediction: str, ground_truth: str) -> float:
     """计算单个预测与标准答案的 F1 分数。"""
-    np = normalizeAnswer(prediction)
-    ng = normalizeAnswer(ground_truth)
+    np = normalizeAnswerForMatch(prediction)
+    ng = normalizeAnswerForMatch(ground_truth)
     # HotpotQA 的 yes/no 特殊处理
     if np in ("yes", "no", "noanswer") and np != ng:
         return 0.0
@@ -68,13 +139,14 @@ def answerEMScore(prediction: str, ground_truth: str, answer_aliases: List[str] 
     判断预测答案是否与标准答案完全匹配（Exact Match）。
 
     如果提供了 answer_aliases（MuSiQue 数据集），只要匹配任一即可。
+    比对使用 normalizeAnswerForMatch：在常规归一化后再去掉冠词、介词等虚词，仅比较主干。
     """
-    np = normalizeAnswer(prediction)
-    if np == normalizeAnswer(ground_truth):
+    np = normalizeAnswerForMatch(prediction)
+    if np == normalizeAnswerForMatch(ground_truth):
         return True
     if answer_aliases:
         for alias in answer_aliases:
-            if np == normalizeAnswer(alias):
+            if np == normalizeAnswerForMatch(alias):
                 return True
     return False
 
