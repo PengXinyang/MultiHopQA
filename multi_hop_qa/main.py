@@ -473,7 +473,7 @@ def main() -> None:
         samples = select_sample_indices(args, data_path, len_data)
         selected_items = None
 
-    approaches = [cot, tot, got, multiAgentGoT]
+    approaches = [multiAgentGoT, cot, tot, got]
     # approaches = [multiAgentGoT]
     role_model_names = default_role_model_names()
 

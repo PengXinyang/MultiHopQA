@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from graph_of_thoughts import parser
 
@@ -331,6 +331,108 @@ class MultiHopParser(parser.Parser):
             state["suggested_action"] = state.get("suggested_action") or "backtrack_retrieve"
 
     @staticmethod
+    def _canonicalize_got_split_key(raw_k) -> Optional[str]:
+        lk = str(raw_k).strip().lower()
+        if not lk:
+            return None
+        k2 = re.sub(r"\s+|_|-|\.|:|\"", "", lk)
+        digits = lk.replace("group", "").replace("grp", "").strip()
+        if k2 == "group0" or lk in ("group 0", "g0") or lk == "0" or digits == "0":
+            return "Group 0"
+        if k2 == "group1" or lk in ("group 1", "g1") or lk == "1" or digits == "1":
+            return "Group 1"
+        if k2.endswith("group0"):
+            return "Group 0"
+        if k2.endswith("group1"):
+            return "Group 1"
+        return None
+
+    @staticmethod
+    def _parse_got_phase0_groups(text: str) -> Dict[str, str]:
+        """从首轮 GoT split 输出中取 Group 0/Group 1 正文；可为空字典。"""
+        s = MultiHopParser._unwrap_fenced_json(text.strip())
+        found: Dict[str, str] = {}
+        start = s.find("{")
+        end = s.rfind("}") + 1
+        if start < 0 or end <= start:
+            return found
+        blob = s[start:end]
+        obj = None
+        try:
+            obj = json.loads(blob)
+        except Exception:
+            txt = blob.replace("'", '"')
+            txt = re.sub(r",(\s*[\]}])", r"\1", txt)
+            try:
+                obj = json.loads(txt)
+            except Exception:
+                return found
+        if not isinstance(obj, dict):
+            return found
+        for k, val in obj.items():
+            canon = MultiHopParser._canonicalize_got_split_key(k)
+            if canon and isinstance(val, str):
+                vv = val.strip()
+                if vv:
+                    prev = found.get(canon, "")
+                    if len(vv) > len(prev):
+                        found[canon] = vv
+        return found
+
+    @staticmethod
+    def _fallback_got_doc_partition_slabs(state: Dict) -> tuple:
+        """与 MultiHopPrompter 一致的文档二分 + 正文切片，供 JSON 失败或缺一侧时回填。"""
+        try:
+            from multi_hop_qa.utils import contextToText
+        except ImportError:
+            import utils as _mh_utils_pt
+
+            contextToText = _mh_utils_pt.contextToText
+
+        ctx = state.get("context") or []
+        num_docs = int(state.get("num_docs", len(ctx)) or 0) or len(ctx)
+        n = len(ctx)
+        if not n:
+            return "", ""
+        half = max(1, num_docs // 2)
+        g0_end = min(n, half + 1)
+        g1_start = max(1, half)
+        slab0 = contextToText(ctx[0:g0_end])[:2800]
+        slab1 = contextToText(ctx[g1_start - 1 : n])[:2800]
+        return slab0, slab1
+
+    @staticmethod
+    def _make_got_branch_state(state: Dict, part_label: str, summary_text: str) -> Dict:
+        ns = state.copy()
+        ns["current"] = (summary_text or "").strip() or "(no summary)"
+        ns["part"] = part_label
+        ns["phase"] = 1
+        return ns
+
+    @staticmethod
+    def _finalize_got_split_branches(state: Dict, lm_text: str) -> List[Dict]:
+        gmap = MultiHopParser._parse_got_phase0_groups(lm_text)
+        if not gmap:
+            logging.debug(
+                "GoT split: no parseable JSON groups; doc-slab fallback for missing sides."
+            )
+        t0 = str(gmap.get("Group 0", "") or "").strip()
+        t1 = str(gmap.get("Group 1", "") or "").strip()
+        s0, s1 = MultiHopParser._fallback_got_doc_partition_slabs(state)
+        if not t0 and s0:
+            t0 = s0
+        if not t1 and s1:
+            t1 = s1
+        if not t0:
+            t0 = t1 or s0 or "(fallback empty)"
+        if not t1:
+            t1 = t0 or s1 or "(fallback empty)"
+        return [
+            MultiHopParser._make_got_branch_state(state, "Group 0", t0),
+            MultiHopParser._make_got_branch_state(state, "Group 1", t1),
+        ]
+
+    @staticmethod
     def _tokenOverlapScore(prediction: str, reference: str) -> float:
         pred_tokens = re.findall(r"[A-Za-z0-9]+", (prediction or "").lower())
         ref_tokens = re.findall(r"[A-Za-z0-9]+", (reference or "").lower())
@@ -352,22 +454,17 @@ class MultiHopParser(parser.Parser):
 
         for text in texts:
             if method.startswith("got") and phase == 0:
-                try:
-                    s = text.strip()
-                    start = s.find("{")
-                    end = s.rfind("}") + 1
-                    if start >= 0 and end > start:
-                        json_str = s[start:end]
-                        obj = json.loads(json_str)
-                        for key in ("Group 0", "Group 1"):
-                            if key in obj and isinstance(obj[key], str):
-                                new_state = state.copy()
-                                new_state["current"] = obj[key].strip()
-                                new_state["part"] = key
-                                new_state["phase"] = 1
-                                new_states.append(new_state)
-                except Exception as e:
-                    logging.warning("Failed to parse GoT split JSON: %s", e)
+                branches = MultiHopParser._finalize_got_split_branches(state, text)
+                if not branches:
+                    logging.warning(
+                        "GoT split produced no branches; using document-partition slabs."
+                    )
+                    s0, s1 = MultiHopParser._fallback_got_doc_partition_slabs(state)
+                    branches = [
+                        MultiHopParser._make_got_branch_state(state, "Group 0", s0 or "(empty)"),
+                        MultiHopParser._make_got_branch_state(state, "Group 1", s1 or "(empty)"),
+                    ]
+                new_states.extend(branches)
             elif method.startswith("multiAgentGoT"):
                 if phase == 0:
                     try:

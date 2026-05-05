@@ -3,7 +3,8 @@ import glob
 import json
 import logging
 import os
-from typing import Any, Callable, Dict, List, Optional, Tuple
+import re
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import score
 from multi_hop_qa.data.data_loader import loadDataset, DatasetType
@@ -47,6 +48,72 @@ def contextToTextWithIndices(context: List) -> str:
         else:
             parts.append(str(item))
     return "\n".join(parts)
+
+
+def _token_set_multi_hop(text: str) -> Set[str]:
+    return set(re.findall(r"[A-Za-z0-9]+", (text or "").lower()))
+
+
+def gotEvidenceTopSentences(context: List, query: str, top_k: int = 8) -> str:
+    """
+    GoT Partial/Aggregate 用：根据与 query 的词重叠 score，从文段中取 Top-K 句子行。
+    Query 通常为 question + summary（或两处 partial）。
+    """
+    ctx = context or []
+    qt = _token_set_multi_hop(query)
+    if not qt:
+        blob = contextToTextWithIndices(ctx)
+        lines = blob.split("\n") if blob else []
+        return "\n".join(lines[: max(2, top_k)])
+
+    indexed = []
+    for item in ctx:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            title, sents = item[0], item[1]
+            if not isinstance(sents, list):
+                continue
+            for idx, sent in enumerate(sents):
+                st = str(sent or "").strip()
+                if len(st) < 3:
+                    continue
+                line = f"({title}, {idx}) {st}"
+                stoks = _token_set_multi_hop(st)
+                overlap = len(qt & stoks) / max(1.0, len(qt))
+                indexed.append((overlap, line))
+        else:
+            raw = str(item).strip()
+            if len(raw) < 10:
+                continue
+            overlap = (
+                len(qt & _token_set_multi_hop(raw))
+                / max(1.0, len(qt))
+            )
+            indexed.append((overlap, raw))
+
+    indexed.sort(key=lambda x: -x[0])
+    seen = set()
+    picks: List[str] = []
+    for _, line in indexed:
+        if line in seen:
+            continue
+        seen.add(line)
+        picks.append(line)
+        if len(picks) >= max(2, top_k):
+            break
+    if not picks:
+        picks = ["(no retrieval) use full context excerpt below."]
+    return "\n".join(picks)
+
+
+def gotContextExcerpt(context_text: str, max_chars: int = 5200) -> str:
+    """给 prompt 拼接用：超长全文截断以免爆 token。"""
+    t = context_text or ""
+    if len(t) <= max_chars:
+        return t
+    half = max_chars // 2
+    return (
+        f"{t[:half]}\n\n[ … middle omitted … ]\n\n{t[-half:]}"
+    )
 
 
 # --- 运行辅助函数 ---

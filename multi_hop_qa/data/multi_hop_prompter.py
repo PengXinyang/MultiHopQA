@@ -2,6 +2,14 @@ from typing import Dict, List
 
 from graph_of_thoughts import prompter
 
+try:
+    from multi_hop_qa.utils import gotContextExcerpt, gotEvidenceTopSentences
+except ImportError:
+    import utils as _mh_utils
+
+    gotContextExcerpt = _mh_utils.gotContextExcerpt
+    gotEvidenceTopSentences = _mh_utils.gotEvidenceTopSentences
+
 
 class MultiHopPrompter(prompter.Prompter):
     """为多跳问答任务（问题 + 上下文 -> 答案）生成提示词。"""
@@ -69,10 +77,24 @@ For each group, write a short summary of the information in THAT range that is r
 </Question>"""
 
     got_partial_prompt = """<Instruction>
-Using only the following summary (from a subset of documents), state the key fact or partial answer that helps answer the question. Be concise. End with "Partial: ...".
-If the fact is a definite single value (number, name, yes/no, etc.), write only that value after "Partial:" (no need for a full sentence).
-Otherwise one short sentence is OK.
+The summary below is a distilled view of ONE document-range; it may miss names or bridging facts.
+
+Use BOTH:
+1) Top evidence lines retrieved for this question (+summary), AND
+2) The full-context excerpt,
+
+to derive the key partial fact aligned with grounded wording. Prefer facts supported by Evidence; treat Summary only as hints. Be concise. End with "Partial: ...".
+
+If the fact is a definite single value (number, name, yes/no, etc.), write only that value after "Partial:" (no full sentence). Otherwise one short sentence is OK.
 </Instruction>
+
+<EvidenceTopSentences>
+{evidence_topk}
+</EvidenceTopSentences>
+
+<FullContextExcerpt>
+{context_excerpt}
+</FullContextExcerpt>
 
 <Summary>
 {current}
@@ -85,13 +107,23 @@ Otherwise one short sentence is OK.
 Partial:"""
 
     got_aggregate_prompt = """<Instruction>
-Combine the two partial answers below to give the final answer to the question. Output only one line: "Answer: <final answer>".
-If the combined answer is definite and can be expressed as a single token or minimal phrase (number, name, yes/no, nationality, etc.), output ONLY that after "Answer:"—do not use a full sentence.
+Combine partial answers below into the correct final answer, using Evidence + Context excerpt when partials disagree or omit detail.
+Output exactly one line: "Answer: <final answer>".
+
+If the answer is definite and can be expressed as a single token or minimal phrase (number, name, yes/no, nationality, etc.), output ONLY that after "Answer:"—no full sentence.
 </Instruction>
 
 <Question>
 {question}
 </Question>
+
+<EvidenceTopSentences>
+{evidence_topk}
+</EvidenceTopSentences>
+
+<FullContextExcerpt>
+{context_excerpt}
+</FullContextExcerpt>
 
 Partial answer 1: {input1}
 
@@ -364,10 +396,22 @@ GlobalCritique: <one-sentence evaluation of final answer quality>
                 partials_text="\n".join(parts),
             )
         assert len(state_dicts) == 2
+        base = state_dicts[0]
+        ctx = base.get("context") or []
+        ct_full = str(base.get("context_text") or "")
+        iq = "{}\n{}\n{}".format(
+            base.get("question", ""),
+            state_dicts[0].get("current", ""),
+            state_dicts[1].get("current", ""),
+        )
+        agg_ev = gotEvidenceTopSentences(ctx, iq, top_k=10)
+        agg_excerpt = gotContextExcerpt(ct_full, max_chars=5600)
         return self.got_aggregate_prompt.format(
-            question=state_dicts[0]["question"],
+            question=base.get("question", ""),
             input1=state_dicts[0].get("current", ""),
             input2=state_dicts[1].get("current", ""),
+            evidence_topk=agg_ev,
+            context_excerpt=agg_excerpt,
         )
 
     def generate_prompt(self, num_branches: int, **kwargs) -> str:
@@ -405,8 +449,17 @@ GlobalCritique: <one-sentence evaluation of final answer quality>
                     g1_end=g1_end,
                 )
             if phase == 1:
+                ctx_list = kwargs.get("context") or []
+                cq = "{}\n{}".format(question, kwargs.get("current", "") or "")
+                partial_ev = gotEvidenceTopSentences(ctx_list, cq, top_k=8)
+                partial_excerpt = gotContextExcerpt(
+                    kwargs.get("context_text") or "", max_chars=5200
+                )
                 return self.got_partial_prompt.format(
-                    question=question, current=kwargs.get("current", "")
+                    question=question,
+                    current=kwargs.get("current", ""),
+                    evidence_topk=partial_ev,
+                    context_excerpt=partial_excerpt,
                 )
             return self.io_prompt.format(question=question, context_text=context_text)
         if method.startswith("multiAgentGoT"):
