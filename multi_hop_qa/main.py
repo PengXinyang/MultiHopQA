@@ -474,7 +474,7 @@ def main() -> None:
         selected_items = None
 
     approaches = [multiAgentGoT, cot, tot, got]
-    # approaches = [multiAgentGoT]
+    approaches = [multiAgentGoT]
     role_model_names = default_role_model_names()
 
     print_run_config(args, role_model_names, samples, len_data, seed)
