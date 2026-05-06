@@ -297,6 +297,23 @@ Grounding constraints (CRITICAL):
 {evidence_summary}
 </Evidence>"""
 
+    # -------------------------------------------------------------------------
+    # 以下原为 ma_aggregate_prompt 正文中的 「Not mentioned」策略，已从发给模型的
+    # Instruction 中移除（改为强制 best-effort、禁止推脱用语）；仅在代码中保留备查：
+    #
+    # Not mentioned (strict—use rarely):
+    # - Output exactly: Answer: Not mentioned
+    #   ONLY if ALL hold after you have read Partials, EvidenceTopSentences, AND FullContextExcerpt:
+    #   (1) No validation=PASS partial gives a grounded candidate for that final facet,
+    #   AND (2) Neither EvidenceTopSentences nor FullContextExcerpt contains any sentence that
+    #   directly states a concrete answer to <Question>.
+    # - Do NOT use Not mentioned merely because some hops show REJECT, NEED_RETRIEVE, or weak
+    #   line_score—if the fact appears in EvidenceTopSentences or FullContextExcerpt, you MUST
+    #   answer with that minimal phrase.
+    # - If you are uncertain but the context contains a clear name/date/number for the asked
+    #   facet, prefer that answer over Not mentioned.
+    # -------------------------------------------------------------------------
+
     ma_aggregate_prompt = """<Instruction>
 You are the final aggregator in multi-agent GoT (same role as GoT's final merge step).
 Fuse hop partials and, when needed, the retrieved evidence lines + context excerpt below—exactly like GoT uses Evidence + Context to fix omissions or disagreements.
@@ -318,13 +335,17 @@ Hard constraints:
     (e.g. if the question asks for a castle or city, do NOT answer with a company name from an earlier hop unless the text equates them).
   - Use the facet that corresponds to the FINAL wording of <Question>; earlier hops are scaffolding.
 
-Not mentioned (strict—use rarely):
-- Output exactly: Answer: Not mentioned
-  ONLY if ALL hold after you have read Partials, EvidenceTopSentences, AND FullContextExcerpt:
-  (1) No validation=PASS partial gives a grounded candidate for that final facet,
-  AND (2) Neither EvidenceTopSentences nor FullContextExcerpt contains any sentence that directly states a concrete answer to <Question>.
-- Do NOT use Not mentioned merely because some hops show REJECT, NEED_RETRIEVE, or weak line_score—if the fact appears in EvidenceTopSentences or FullContextExcerpt, you MUST answer with that minimal phrase.
-- If you are uncertain but the context contains a clear name/date/number for the asked facet, prefer that answer over Not mentioned.
+Always give a concrete best-effort answer (FORBIDDEN outputs):
+- You MUST NOT output refusal or empty placeholders such as "Not mentioned", "not specified", "no information",
+  "cannot determine", "unable to determine", "unknown", "unclear", "n/a", "not available",
+  or any synonymous phrase—this benchmark expects a substantive span from context when at all possible.
+- If hops look weak or contradictory, still emit the single BEST guess: choose the shortest phrase that (a) matches
+  the FINAL question facet and (b) is explicitly present in Partials, EvidenceTopSentences, or FullContextExcerpt.
+- When REJECT/NEED_RETRIEVE appears on hops, IGNORE those failures for giving up—read EvidenceTopSentences and
+  FullContextExcerpt and answer from a verbatim span that answers <Question>.
+- If only intermediate-hop entities exist, pick the one that the final question targets (e.g. child name not parent org)
+  using the same sources; only if NO string in those three sources plausibly matches the asked facet may you output
+  a yes/no grounded in explicit contrastive clues—never a refusal phrase.
 
 Temporal precision: if the question asks "when"/a date/time AND Partials or EvidenceTopSentences or FullContextExcerpt has finer granularity than a bare year, keep the finest supported form (e.g. "7 January 2011" not "2011"). Use a bare year only if finer parts are nowhere in those sources.
 

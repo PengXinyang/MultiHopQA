@@ -185,6 +185,64 @@ class MultiHopParser(parser.Parser):
         return text.split("\n")[0].strip() if text else ""
 
     @staticmethod
+    def _is_refusal_style_answer(answer: str) -> bool:
+        t = (answer or "").strip().lower().rstrip(".")
+        if not t:
+            return True
+        refuse = (
+            "not mentioned",
+            "not specified",
+            "not stated",
+            "no information",
+            "cannot determine",
+            "can't determine",
+            "unable to determine",
+            "unknown",
+            "unclear",
+            "n/a",
+            "not available",
+            "insufficient information",
+            "can't answer",
+            "cannot answer",
+        )
+        if t in refuse:
+            return True
+        # leading phrase match (e.g. "Not mentioned.")
+        return any(t == r or t.startswith(r + " ") or t.startswith(r + ".") for r in refuse)
+
+    @staticmethod
+    def _multiagent_aggregate_fallback_from_hops(state: Dict) -> str:
+        """Prefer last plausible hop partial when the aggregate model refused to answer."""
+        hist = state.get("hop_history") or []
+        if not isinstance(hist, list):
+            return ""
+
+        def ok_partial(part: str) -> bool:
+            p = (part or "").strip()
+            if not p:
+                return False
+            pu = p.upper()
+            return not (pu.startswith("NEED_RETRIEVE"))
+
+        # Prefer PASS partials from last hop backwards
+        for step in reversed(hist):
+            if not isinstance(step, dict):
+                continue
+            if str(step.get("validation_decision", "")).upper() != "PASS":
+                continue
+            pa = step.get("partial_answer") or ""
+            if ok_partial(pa):
+                return pa.strip()
+        # Any non–NEED_RETRIEVE partial
+        for step in reversed(hist):
+            if not isinstance(step, dict):
+                continue
+            pa = step.get("partial_answer") or ""
+            if ok_partial(pa):
+                return pa.strip()
+        return ""
+
+    @staticmethod
     def _looks_like_range(text: str) -> bool:
         t = (text or "").lower()
         if re.search(r"\bbetween\s+\d{3,4}\s+and\s+\d{3,4}\b", t):
@@ -656,6 +714,11 @@ class MultiHopParser(parser.Parser):
             answer = self._extract_answer(text)
             answer = self._coerce_yes_no(answer, gold_answer)
             base = states[0].copy() if states else {}
+            if str(base.get("method", "")).startswith("multiAgentGoT"):
+                if self._is_refusal_style_answer(answer):
+                    fb = self._multiagent_aggregate_fallback_from_hops(base)
+                    if fb:
+                        answer = fb
             new_state = {**base, "current": answer, "answer": answer}
             new_states.append(new_state)
         return new_states
