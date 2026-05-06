@@ -298,29 +298,37 @@ Grounding constraints (CRITICAL):
 </Evidence>"""
 
     ma_aggregate_prompt = """<Instruction>
-You are the final aggregator in multi-agent GoT.
-Fuse all refined partial answers and output exactly one line:
+You are the final aggregator in multi-agent GoT (same role as GoT's final merge step).
+Fuse hop partials and, when needed, the retrieved evidence lines + context excerpt below—exactly like GoT uses Evidence + Context to fix omissions or disagreements.
+Output exactly one line (no other text after it):
 Answer: <final answer>
+
+Short-answer format (align with CoT / GoT):
+- If the answer is a definite value (name, place, number, date, yes/no, nationality, etc.), put ONLY that token or minimal phrase after "Answer:"—never a full sentence.
+- Prefer copying the shortest surface form that appears verbatim in Partials hop evidence OR in EvidenceTopSentences OR in FullContextExcerpt (helps string evaluation).
+- Do NOT concatenate multiple unrelated names with "and" unless the question explicitly asks for multiple entities with no single best single answer.
+- For numbers/units: if the question expects a bare number but the context shows "45 miles", mirror the granularity the question/target style implies; prefer the shortest form that stays verbatim in Partials/evidence/context when unsure.
+
 Hard constraints:
-- Do NOT introduce any new entity that does not appear in the provided partial answers or evidence summaries.
-- If multiple entities appear, choose only the entity that best answers the question.
-- Keep the answer minimal (entity/phrase), not a long explanation.
+- Do NOT invent entities, dates, or numbers absent from (1) hop lines in Partials, (2) EvidenceTopSentences, or (3) FullContextExcerpt.
+- If multiple candidates appear, choose the single one that best answers the final Question.
 - Final-question alignment (CRITICAL):
-  - First infer what the <Question> asks for: person, organization, place/city/country, building/landmark, date/time, number, yes/no, etc.
+  - Infer what the <Question> asks for: person, organization, place/city/country, building/landmark, date/time, number, yes/no, etc.
   - Your final answer MUST be that type. Do NOT substitute an intermediate-hop answer of a different type
-    (e.g. if the question asks for a castle or city, do NOT answer with a company name from an earlier hop).
-  - Use the hop that corresponds to the FINAL facet asked by the <Question>; earlier hops are only supporting context.
-  - If no partial or evidence supports the requested facet, output: Answer: Not mentioned
-- Temporal precision rule (IMPORTANT): if the question is asking "when"/a date/time AND the provided partials/evidence contain a more specific date than just a year, you MUST keep the finest supported granularity.
-  Examples:
-  - If you see "April 2012" anywhere relevant, do NOT answer only "2012"; answer "April 2012".
-  - If you see "7 January 2011", do NOT answer "2011"; answer "7 January 2011".
-  - Only output a bare year (e.g., "2012") if month/day are NOT present in the provided partials/evidence.
-- Anti-hallucination rule (IMPORTANT): for numeric/time answers, output ONLY values that appear verbatim in the provided partials/evidence summaries.
-- Reliability rule (IMPORTANT): each clue includes a line_score in [0,1], where higher is more reliable.
-  You MUST prioritize clues with higher line_score when clues conflict.
-  If a clue has max_retry_reached=true and low line_score, treat it as weak evidence.
-  If a clue has validation=REJECT, it means this partial answer was explicitly rejected by the critic. You MUST ignore REJECTED answers whenever possible, and rely on the PASS answers instead.
+    (e.g. if the question asks for a castle or city, do NOT answer with a company name from an earlier hop unless the text equates them).
+  - Use the facet that corresponds to the FINAL wording of <Question>; earlier hops are scaffolding.
+
+Not mentioned (strict—use rarely):
+- Output exactly: Answer: Not mentioned
+  ONLY if ALL hold after you have read Partials, EvidenceTopSentences, AND FullContextExcerpt:
+  (1) No validation=PASS partial gives a grounded candidate for that final facet,
+  AND (2) Neither EvidenceTopSentences nor FullContextExcerpt contains any sentence that directly states a concrete answer to <Question>.
+- Do NOT use Not mentioned merely because some hops show REJECT, NEED_RETRIEVE, or weak line_score—if the fact appears in EvidenceTopSentences or FullContextExcerpt, you MUST answer with that minimal phrase.
+- If you are uncertain but the context contains a clear name/date/number for the asked facet, prefer that answer over Not mentioned.
+
+Temporal precision: if the question asks "when"/a date/time AND Partials or EvidenceTopSentences or FullContextExcerpt has finer granularity than a bare year, keep the finest supported form (e.g. "7 January 2011" not "2011"). Use a bare year only if finer parts are nowhere in those sources.
+
+Reliability among hop lines: prioritize higher line_score; treat max_retry_reached with low score as weak; ignore validation=REJECT partials when a PASS partial or verbatim context line supports the answer.
 </Instruction>
 
 <Question>
@@ -329,7 +337,15 @@ Hard constraints:
 
 <Partials>
 {partials_text}
-</Partials>"""
+</Partials>
+
+<EvidenceTopSentences>
+{evidence_topk}
+</EvidenceTopSentences>
+
+<FullContextExcerpt>
+{context_excerpt}
+</FullContextExcerpt>"""
 
     ma_score_prompt = """<Instruction>
 You are an answer-judging agent.
@@ -391,9 +407,17 @@ GlobalCritique: <one-sentence evaluation of final answer quality>
                     f"  Reliability: validation={validation}, line_score={float(line_score or 0.0):.2f}, "
                     f"trust={trust or 'unknown'}, max_retry_reached={bool(max_retry)}"
                 )
+            partials_block = "\n".join(parts)
+            ctx = base.get("context") or []
+            ct_full = str(base.get("context_text") or "")
+            iq = "{}\n{}".format(base.get("question", ""), partials_block)
+            agg_ev = gotEvidenceTopSentences(ctx, iq, top_k=10)
+            agg_excerpt = gotContextExcerpt(ct_full, max_chars=5600)
             return self.ma_aggregate_prompt.format(
                 question=base.get("question", ""),
-                partials_text="\n".join(parts),
+                partials_text=partials_block,
+                evidence_topk=agg_ev,
+                context_excerpt=agg_excerpt,
             )
         assert len(state_dicts) == 2
         base = state_dicts[0]
