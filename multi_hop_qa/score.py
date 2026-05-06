@@ -176,6 +176,38 @@ def combinedScore(state: Dict) -> float:
         return 0.7 * a_f1 + 0.3 * s_f1
     return a_f1
 
+
+_EM_FIRST_MAGOT_PRIORITY = 1000.0
+
+
+def _effective_answer_text(state: Dict) -> str:
+    """与 multi_hop_parser 口径对齐：最终答案 / current / 跳步 partial。"""
+    if not isinstance(state, dict):
+        return ""
+    return (state.get("answer") or state.get("current") or state.get("partial_answer") or "").strip()
+
+
+def scoreMultiAgentGoTBranchSelect(state: Dict) -> float:
+    """
+    仅供 multiAgentGoT 的 KeepBestN 剪枝：在带金标的评测 state 上，EM 命中者优先；
+    否则用 scoreMultiAgentGoT 作为排序分值（与原先中间层依赖 LLM 分数相比，仍可在无 EM 时区分候选）。
+    """
+    try:
+        if not isinstance(state, dict):
+            return 0.0
+        pred = _effective_answer_text(state)
+        gold = (state.get("ground_truth_answer") or "").strip()
+        aliases = state.get("answer_aliases") or []
+        base_state = dict(state)
+        base_state["answer"] = pred or base_state.get("answer") or ""
+        base = scoreMultiAgentGoT(base_state)
+        if gold and pred and answerEMScore(pred, gold, aliases):
+            return _EM_FIRST_MAGOT_PRIORITY + base
+        return base
+    except Exception:
+        return 0.0
+
+
 # --- GroundTruth 判定与给 GraphOfOperations 使用的打分函数 ---
 
 

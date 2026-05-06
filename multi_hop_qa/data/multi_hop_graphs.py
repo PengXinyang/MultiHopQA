@@ -97,7 +97,7 @@ def multiAgentGoT(
         retriever.add_predecessor(prev)
         g.add_operation(retriever)
 
-        retriever_score = operations.Score(1, False, None)
+        retriever_score = operations.Score(1, False, score.scoreMultiAgentGoTBranchSelect)
         retriever_score.add_predecessor(retriever)
         g.add_operation(retriever_score)
 
@@ -110,7 +110,7 @@ def multiAgentGoT(
         reasoner.add_predecessor(retriever_best)
         g.add_operation(reasoner)
 
-        reasoner_score = operations.Score(1, False, None)
+        reasoner_score = operations.Score(1, False, score.scoreMultiAgentGoTBranchSelect)
         reasoner_score.add_predecessor(reasoner)
         g.add_operation(reasoner_score)
 
@@ -151,11 +151,12 @@ def multiAgentGoT(
         sel.add_predecessor(c)
     g.add_operation(sel)
 
-    aggregate = operations.Aggregate(1)
+    # 聚合为两条最终答案，剪枝 EM 优先；是否「解决」仍由后续 LLM Score 写入 _thought_score + testMultiHop 阈值判定
+    aggregate = operations.Aggregate(2)
     aggregate.add_predecessor(sel)
     g.add_operation(aggregate)
 
-    final_score = operations.Score(1, False, None)
+    final_score = operations.Score(1, False, score.scoreMultiAgentGoTBranchSelect)
     final_score.add_predecessor(aggregate)
     g.add_operation(final_score)
 
@@ -163,8 +164,12 @@ def multiAgentGoT(
     keep_best.add_predecessor(final_score)
     g.add_operation(keep_best)
 
+    llm_solve_judge = operations.Score(1, False, None)
+    llm_solve_judge.add_predecessor(keep_best)
+    g.add_operation(llm_solve_judge)
+
     gt = operations.GroundTruth(score.testMultiHop)
-    gt.add_predecessor(keep_best)
+    gt.add_predecessor(llm_solve_judge)
     g.add_operation(gt)
 
     return g
